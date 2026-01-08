@@ -7,26 +7,52 @@ class Queries:
     
     # Student queries
     GET_ALL_STUDENTS = """
-        SELECT s.*, 
+        SELECT s.*,
                COALESCE(SUM(sf.amount_paid), 0) AS total_paid,
-               COALESCE(SUM(ft.amount), 0) AS total_due,
-               COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
+               COALESCE(SUM(
+                   CASE
+                       WHEN sfe.exemption_id IS NOT NULL THEN 0
+                       WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
+                       ELSE ft.amount
+                   END
+               ), 0) AS total_due,
+               COALESCE(SUM(
+                   CASE
+                       WHEN sfe.exemption_id IS NOT NULL THEN 0
+                       WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
+                       ELSE ft.amount
+                   END
+               ), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
         FROM students s
-        LEFT JOIN student_fees sf ON s.student_id = sf.student_id
-        LEFT JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id AND ft.academic_year = %s
+        LEFT JOIN fee_types ft ON ft.academic_year = %s
+        LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
+        LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
         WHERE s.is_active = 1
         GROUP BY s.student_id
         ORDER BY s.last_name, s.first_name
     """
     
     GET_STUDENT_BY_ID = """
-        SELECT s.*, 
+        SELECT s.*,
                COALESCE(SUM(sf.amount_paid), 0) AS total_paid,
-               COALESCE(SUM(ft.amount), 0) AS total_due,
-               COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
+               COALESCE(SUM(
+                   CASE
+                       WHEN sfe.exemption_id IS NOT NULL THEN 0
+                       WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
+                       ELSE ft.amount
+                   END
+               ), 0) AS total_due,
+               COALESCE(SUM(
+                   CASE
+                       WHEN sfe.exemption_id IS NOT NULL THEN 0
+                       WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
+                       ELSE ft.amount
+                   END
+               ), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
         FROM students s
-        LEFT JOIN student_fees sf ON s.student_id = sf.student_id
-        LEFT JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id AND ft.academic_year = %s
+        LEFT JOIN fee_types ft ON ft.academic_year = %s
+        LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
+        LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
         WHERE s.student_id = %s
         GROUP BY s.student_id
     """
@@ -34,11 +60,24 @@ class Queries:
     SEARCH_STUDENTS = """
         SELECT s.*, 
                COALESCE(SUM(sf.amount_paid), 0) AS total_paid,
-               COALESCE(SUM(ft.amount), 0) AS total_due,
-               COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
+               COALESCE(SUM(
+                   CASE
+                       WHEN sfe.exemption_id IS NOT NULL THEN 0
+                       WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
+                       ELSE ft.amount
+                   END
+               ), 0) AS total_due,
+               COALESCE(SUM(
+                   CASE
+                       WHEN sfe.exemption_id IS NOT NULL THEN 0
+                       WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
+                       ELSE ft.amount
+                   END
+               ), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
         FROM students s
-        LEFT JOIN student_fees sf ON s.student_id = sf.student_id
-        LEFT JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id AND ft.academic_year = %s
+        LEFT JOIN fee_types ft ON ft.academic_year = %s
+        LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
+        LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
         WHERE s.is_active = 1 
           AND (s.first_name LIKE %s OR s.last_name LIKE %s OR s.student_code LIKE %s)
         GROUP BY s.student_id
@@ -47,12 +86,21 @@ class Queries:
     
     GET_STUDENT_FEE_DETAILS = """
         SELECT 
+            ft.fee_type_id,
             ft.fee_name,
             ft.amount AS expected_amount,
             COALESCE(SUM(sf.amount_paid), 0) AS paid_amount,
-            ft.amount - COALESCE(SUM(sf.amount_paid), 0) AS balance,
+            COALESCE(
+                CASE
+                    WHEN sfe.exemption_id IS NOT NULL THEN 0
+                    WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
+                    ELSE ft.amount
+                END, ft.amount
+            ) - COALESCE(SUM(sf.amount_paid), 0) AS balance,
             MAX(sf.payment_date) AS last_payment
         FROM fee_types ft
+        LEFT JOIN students s ON 1=1
+        LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = %s AND sfe.fee_type_id = ft.fee_type_id
         LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.student_id = %s
         WHERE ft.academic_year = %s
         GROUP BY ft.fee_type_id, ft.fee_name, ft.amount

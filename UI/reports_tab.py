@@ -23,91 +23,84 @@ from reports.generators.inventory_reports import (
     generate_inventory_valuation_report
 )
 from UI.dialogs import DateRangeDialog, StudentSelectionDialog
-
 class ReportsTab:
     def __init__(self, parent):
         self.parent = parent
         self.frame = ttk.Frame(parent)
-        self.setup_ui()
         self.current_report = None
         self.report_params = {}
-    
+        self.setup_ui()
+
     def setup_ui(self):
         """Setup reports tab UI"""
-        # Main container
         main_container = ttk.Frame(self.frame)
         main_container.pack(fill='both', expand=True, padx=10, pady=10)
-        
+
         # Title
         title_label = ttk.Label(
-            main_container, 
+            main_container,
             text="Report Generator",
             style='Title.TLabel'
         )
         title_label.pack(anchor='w', pady=(0, 10))
-        
-        # Description
+
         desc_label = ttk.Label(
             main_container,
             text="Generate various reports for school management",
             font=('Arial', 10)
         )
         desc_label.pack(anchor='w', pady=(0, 20))
-        
+
         # Create main content area with two panels
         content_frame = ttk.Frame(main_container)
         content_frame.pack(fill='both', expand=True)
-        
+
         # Left panel - Report Categories
         left_panel = ttk.Frame(content_frame, width=300)
         left_panel.pack(side='left', fill='y', padx=(0, 10))
         left_panel.pack_propagate(False)
-        
         self.setup_report_categories(left_panel)
-        
+
         # Right panel - Report Configuration
         right_panel = ttk.Frame(content_frame)
         right_panel.pack(side='left', fill='both', expand=True)
-        
         self.setup_report_configuration(right_panel)
-        
+
         # Status bar
         self.status_frame = ttk.Frame(main_container)
         self.status_frame.pack(fill='x', pady=(10, 0))
-        
         self.status_label = ttk.Label(self.status_frame, text="")
         self.status_label.pack(side='left')
-    
+
     def setup_report_categories(self, parent):
         """Setup report categories treeview"""
         # Category label
         cat_label = ttk.Label(
-            parent, 
+            parent,
             text="Report Categories",
             style='Header.TLabel'
         )
         cat_label.pack(anchor='w', pady=(0, 10))
-        
-        # Create treeview for categories
+
         self.category_tree = ttk.Treeview(
             parent,
             height=20,
             selectmode='browse',
             show='tree'
         )
-        
+
         # Add categories and reports
         self.setup_category_tree()
-        
+
         # Add scrollbar
         vsb = ttk.Scrollbar(parent, orient="vertical", command=self.category_tree.yview)
         self.category_tree.configure(yscrollcommand=vsb.set)
-        
         self.category_tree.pack(side='left', fill='both', expand=True)
         vsb.pack(side='right', fill='y')
-        
+
         # Bind selection event
         self.category_tree.bind('<<TreeviewSelect>>', self.on_category_select)
+        
     
     def setup_category_tree(self):
         """Setup category tree structure"""
@@ -744,8 +737,8 @@ class ReportsTab:
             ORDER BY sf.payment_date DESC
         """
         
-        if preview:
-            query += " LIMIT 50"
+        if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
+            query += f" LIMIT {config.Config.PREVIEW_LIMIT}"
         
         return db.execute_query(query, (params['start_date'], params['end_date']), fetch=True)
     
@@ -766,8 +759,8 @@ class ReportsTab:
             ORDER BY e.expense_date DESC
         """
         
-        if preview:
-            query += " LIMIT 50"
+        if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
+            query += f" LIMIT {config.Config.PREVIEW_LIMIT}"
         
         return db.execute_query(query, (params['start_date'], params['end_date']), fetch=True)
     
@@ -851,8 +844,8 @@ class ReportsTab:
             ORDER BY balance DESC, s.class, s.last_name
         """
         
-        if preview:
-            query += " LIMIT 50"
+        if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
+            query += f" LIMIT {config.Config.PREVIEW_LIMIT}"
         
         return db.execute_query(query, values, fetch=True)
     
@@ -891,8 +884,8 @@ class ReportsTab:
         
         query += " ORDER BY s.class, s.last_name, s.first_name"
         
-        if preview:
-            query += " LIMIT 50"
+        if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
+            query += f" LIMIT {config.Config.PREVIEW_LIMIT}"
         
         return db.execute_query(query, values, fetch=True)
     
@@ -923,8 +916,11 @@ class ReportsTab:
             ORDER BY a.attendance_date DESC
         """
         
-        if preview:
-            query += " LIMIT 30"
+        if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
+            # Use PREVIEW_LIMIT for attendance as well; default behavior mimics previous 30-row preview
+            limit = min(config.Config.PREVIEW_LIMIT, 30) if config.Config.PREVIEW_LIMIT > 0 else 0
+            if limit > 0:
+                query += f" LIMIT {limit}"
         
         return db.execute_query(query, values, fetch=True)
     
@@ -963,7 +959,9 @@ class ReportsTab:
                                          fetch=True)
         
         if preview and attendance_data:
-            attendance_data = attendance_data[:30]
+            limit = min(config.Config.PREVIEW_LIMIT, 30) if config.Config.PREVIEW_LIMIT > 0 else 0
+            if limit > 0:
+                attendance_data = attendance_data[:limit]
         
         return {
             'student_info': student_info[0],
@@ -1001,8 +999,8 @@ class ReportsTab:
         
         query += " ORDER BY category, item_name"
         
-        if preview:
-            query += " LIMIT 50"
+        if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
+            query += f" LIMIT {config.Config.PREVIEW_LIMIT}"
         
         return db.execute_query(query, values, fetch=True)
     
@@ -1023,8 +1021,8 @@ class ReportsTab:
             ORDER BY (min_quantity - quantity) DESC
         """
         
-        if preview:
-            query += " LIMIT 50"
+        if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
+            query += f" LIMIT {config.Config.PREVIEW_LIMIT}"
         
         return db.execute_query(query, fetch=True)
     

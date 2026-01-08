@@ -68,7 +68,8 @@ class FinanceTab:
         # Amount
         ttk.Label(form_frame, text="Amount:").grid(row=2, column=0, sticky='w', pady=5)
         self.amount_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.amount_var, width=20).grid(row=2, column=1, sticky='w', pady=5, padx=5)
+        self.amount_entry = ttk.Entry(form_frame, textvariable=self.amount_var, width=20)
+        self.amount_entry.grid(row=2, column=1, sticky='w', pady=5, padx=5)
         
         # Payment method
         ttk.Label(form_frame, text="Payment Method:").grid(row=3, column=0, sticky='w', pady=5)
@@ -757,11 +758,12 @@ class FinanceTab:
                             pass
 
             # Set amount and lock if tuition
-            self.amount_var.set(str(int(expected) if expected.is_integer() else str(expected)))
-            if 'tuition' in (fee_name or '').lower():
-                self.amount_entry.config(state='readonly')
-            else:
-                self.amount_entry.config(state='normal')
+            self.amount_var.set(str(int(expected) if float(expected).is_integer() else f"{expected:.2f}"))
+            if hasattr(self, 'amount_entry'):
+                if 'tuition' in (fee_name or '').lower():
+                    self.amount_entry.config(state='readonly')
+                else:
+                    self.amount_entry.config(state='normal')
 
         except Exception as e:
             print(f"Error handling fee type selection: {e}")
@@ -1249,21 +1251,47 @@ class FinanceTab:
                 return
             
             # Parse student ID and fee type ID
-            student_id = int(self.student_var.get().split(':')[0])
+            student_sel = self.student_var.get().strip()
+            try:
+                # Try to parse "ID: Name (Class)" format
+                student_id = int(student_sel.split(':')[0])
+            except (ValueError, IndexError):
+                # Fallback: try to search by name if user typed it manually
+                query = "SELECT student_id FROM students WHERE CONCAT(first_name, ' ', last_name) LIKE %s LIMIT 1"
+                result = db.execute_query(query, (f"%{student_sel}%",), fetch=True)
+                if result:
+                    student_id = result[0]['student_id']
+                else:
+                    messagebox.showerror("Error", "Student not found. Please select from dropdown.")
+                    return
+            
             fee_type_id = int(self.fee_type_var.get().split(':')[0])
             
             # Get description
             description = self.description_text.get("1.0", "end-1c").strip()
             
-            # Generate receipt number if not provided
+            # Generate receipt number if not provided (atomic DB-backed sequence)
             receipt_number = self.receipt_var.get().strip()
             if not receipt_number:
-                # Generate receipt number: REC-YYYYMMDD-XXXX
+                # Use DB-backed per-day sequence for atomic generation
                 date_str = datetime.now().strftime('%Y%m%d')
-                query = "SELECT COUNT(*) as count FROM student_fees WHERE receipt_number LIKE %s"
-                result = db.execute_query(query, (f"REC-{date_str}-%",), fetch=True)
-                next_num = result[0]['count'] + 1 if result else 1
-                receipt_number = f"REC-{date_str}-{next_num:04d}"
+                try:
+                    # Atomic INSERT...ON DUPLICATE KEY UPDATE to increment sequence
+                    db.execute_query(
+                        "INSERT INTO receipt_sequence (seq_date, seq) VALUES (%s, 1) ON DUPLICATE KEY UPDATE seq = seq + 1",
+                        (date_str,)
+                    )
+                    # Fetch the updated sequence number
+                    res = db.execute_query("SELECT seq FROM receipt_sequence WHERE seq_date = %s", (date_str,), fetch=True)
+                    seq = res[0]['seq'] if res else 1
+                    receipt_number = f"REC-{date_str}-{seq:04d}"
+                except Exception as seq_err:
+                    # Fallback to COUNT-based if sequence table has issues
+                    print(f"Warning: sequence generation failed: {seq_err}")
+                    query = "SELECT COUNT(*) as count FROM student_fees WHERE receipt_number LIKE %s"
+                    result = db.execute_query(query, (f"REC-{date_str}-%",), fetch=True)
+                    next_num = result[0]['count'] + 1 if result else 1
+                    receipt_number = f"REC-{date_str}-{next_num:04d}"
                 self.receipt_var.set(receipt_number)
             
             # Insert payment

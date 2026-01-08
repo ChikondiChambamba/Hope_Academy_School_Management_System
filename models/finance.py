@@ -204,6 +204,31 @@ class FeePayment:
                 )
 
                 self.fee_id = db.execute_query(query, params)
+
+                # After successful payment, apply business rules:
+                # - If this payment is for a tuition fee, exempt other tuition fee types for this student.
+                try:
+                    ft = FeeType.get_by_id(self.fee_type_id)
+                    if ft and 'tuition' in ft.fee_name.lower():
+                        # find other tuition fee types for this academic year
+                        other_tuitions = db.execute_query(
+                            "SELECT fee_type_id FROM fee_types WHERE academic_year = %s AND LOWER(fee_name) LIKE %s AND fee_type_id != %s",
+                            (ft.academic_year, '%tuition%', ft.fee_type_id),
+                            fetch=True
+                        )
+                        if other_tuitions:
+                            for row in other_tuitions:
+                                try:
+                                    db.execute_query(
+                                        "INSERT IGNORE INTO student_fee_exemptions (student_id, fee_type_id, reason) VALUES (%s, %s, %s)",
+                                        (self.student_id, row['fee_type_id'], f"Exempted because tuition {ft.fee_type_id} paid")
+                                    )
+                                except Exception:
+                                    pass
+
+                except Exception:
+                    pass
+
                 return True, f"Payment recorded successfully. Receipt: {self.receipt_number}"
 
             except Exception as e:
@@ -224,31 +249,24 @@ class FeePayment:
             # Format: REC-YYYYMMDD-XXXX
             date_str = datetime.now().strftime('%Y%m%d')
 
-            # Start with the count-based suggestion, then verify uniqueness
-            query = """
-                SELECT COUNT(*) as count 
-                FROM student_fees 
-                WHERE receipt_number LIKE %s
-            """
-            pattern = f"REC-{date_str}-%"
-            result = db.execute_query(query, (pattern,), fetch=True)
+            # Use a DB-backed daily sequence to avoid race conditions.
+            # Insert a new row for today or increment existing row atomically using
+            # MySQL's ON DUPLICATE KEY UPDATE behavior.
+            try:
+                upsert = """
+                    INSERT INTO receipt_sequence (seq_date, seq) VALUES (%s, 1)
+                    ON DUPLICATE KEY UPDATE seq = seq + 1
+                """
+                db.execute_query(upsert, (date_str,))
 
-            if result and 'count' in result[0]:
-                next_num = int(result[0]['count']) + 1
-            else:
-                next_num = 1
-
-            # Build candidate and ensure it does not already exist
-            while True:
-                candidate = f"REC-{date_str}-{next_num:04d}"
-                exists = db.execute_query(
-                    "SELECT 1 FROM student_fees WHERE receipt_number = %s LIMIT 1",
-                    (candidate,),
-                    fetch=True
-                )
-                if not exists:
-                    return candidate
-                next_num += 1
+                # Now fetch the current seq value for today
+                res = db.execute_query("SELECT seq FROM receipt_sequence WHERE seq_date = %s", (date_str,), fetch=True)
+                if res and len(res) > 0 and 'seq' in res[0]:
+                    seq = int(res[0]['seq'])
+                    return f"REC-{date_str}-{seq:04d}"
+            except Exception:
+                # Fall back to the previous safe method below if anything goes wrong
+                pass
         except:
             # Fallback
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')

@@ -17,11 +17,11 @@ DB_CONFIG = {
 
 # Application settings
 APP_CONFIG = {
-    'name': 'Primary School Management System',
+    'name': 'Hope Academy School Management System',
     'version': '1.0.0',
     'author': 'School Admin',
-    'default_term': 'Term 1',
-    'academic_year': '2024'
+    'default_term': 'Term 2',
+    'academic_year': '2025-2026',
 }
 
 # Path configurations
@@ -87,9 +87,9 @@ class Config:
 
     # School identity defaults (used in UI and reports)
     SCHOOL_NAME = APP_CONFIG.get('name', 'Primary School')
-    SCHOOL_ADDRESS = APP_CONFIG.get('address', '123 Main St')
-    SCHOOL_PHONE = APP_CONFIG.get('phone', 'N/A')
-    SCHOOL_EMAIL = APP_CONFIG.get('email', 'info@school.local')
+    SCHOOL_ADDRESS = APP_CONFIG.get('address', 'Zomba,Chinamwali , Malawi')
+    SCHOOL_PHONE = APP_CONFIG.get('phone', '0885159301')
+    SCHOOL_EMAIL = APP_CONFIG.get('email', 'HopeAcademy@org.com')
 
     @staticmethod
     def get_log_file():
@@ -112,3 +112,6 @@ class Config:
         export_dir = Path(Config.PATHS.get('exports', Config.BASE_DIR / 'data' / 'exports'))
         export_dir.mkdir(parents=True, exist_ok=True)
         return export_dir / fname
+
+    # Preview/pagination defaults
+    PREVIEW_LIMIT = 1000

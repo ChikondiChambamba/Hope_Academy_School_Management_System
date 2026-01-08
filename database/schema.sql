@@ -19,6 +19,7 @@ CREATE TABLE students (
     address TEXT,
     enrollment_date DATE NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
+    is_new BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
@@ -38,6 +39,7 @@ CREATE TABLE teachers (
     email VARCHAR(100),
     subject_specialization VARCHAR(100),
     hire_date DATE NOT NULL,
+    salary_amount DECIMAL(10,2) DEFAULT 0.00,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -80,6 +82,45 @@ CREATE TABLE student_fees (
     INDEX idx_student_id (student_id),
     INDEX idx_payment_date (payment_date),
     INDEX idx_receipt (receipt_number)
+);
+
+-- Receipt Sequence Table: provides an atomic per-day sequence for receipt numbers
+CREATE TABLE receipt_sequence (
+    seq_date VARCHAR(8) PRIMARY KEY,
+    seq INT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Student Fee Exemptions: store fee types waived for a student (e.g., other tuition when one paid)
+CREATE TABLE student_fee_exemptions (
+    exemption_id INT PRIMARY KEY AUTO_INCREMENT,
+    student_id INT NOT NULL,
+    fee_type_id INT NOT NULL,
+    reason VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
+    FOREIGN KEY (fee_type_id) REFERENCES fee_types(fee_type_id) ON DELETE CASCADE,
+
+    UNIQUE KEY unique_student_fee_exemption (student_id, fee_type_id),
+    INDEX idx_student_exemptions (student_id)
+);
+
+-- Teacher Salary Advances: track advances given to teachers
+CREATE TABLE teacher_salary_advances (
+    advance_id INT PRIMARY KEY AUTO_INCREMENT,
+    teacher_id INT NOT NULL,
+    advance_amount DECIMAL(10,2) NOT NULL,
+    advance_date DATE NOT NULL,
+    description VARCHAR(255),
+    status ENUM('Pending', 'Approved', 'Deducted') DEFAULT 'Pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id) ON DELETE CASCADE,
+    
+    INDEX idx_teacher_id (teacher_id),
+    INDEX idx_advance_date (advance_date),
+    INDEX idx_status (status)
 );
 
 -- Inventory Items Table

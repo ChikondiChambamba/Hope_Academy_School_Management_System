@@ -20,6 +20,7 @@ class Teacher:
     email: str = ""
     subject_specialization: str = ""
     hire_date: Optional[date] = None
+    salary_amount: float = 0.0
     is_active: bool = True
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -87,7 +88,7 @@ class Teacher:
                     UPDATE teachers SET 
                     teacher_code = %s, first_name = %s, last_name = %s,
                     phone = %s, email = %s, subject_specialization = %s,
-                    hire_date = %s, is_active = %s
+                    hire_date = %s, salary_amount = %s, is_active = %s
                     WHERE teacher_id = %s
                 """
                 params = (
@@ -98,6 +99,7 @@ class Teacher:
                     teacher_data['email'],
                     teacher_data['subject_specialization'],
                     teacher_data['hire_date'],
+                    teacher_data['salary_amount'],
                     teacher_data['is_active'],
                     self.teacher_id
                 )
@@ -115,8 +117,8 @@ class Teacher:
                 query = """
                     INSERT INTO teachers 
                     (teacher_code, first_name, last_name, phone, email, 
-                     subject_specialization, hire_date, is_active)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                     subject_specialization, hire_date, salary_amount, is_active)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 params = (
                     teacher_data['teacher_code'],
@@ -126,6 +128,7 @@ class Teacher:
                     teacher_data['email'],
                     teacher_data['subject_specialization'],
                     teacher_data['hire_date'],
+                    teacher_data['salary_amount'],
                     teacher_data['is_active']
                 )
                 

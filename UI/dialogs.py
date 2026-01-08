@@ -206,7 +206,8 @@ class StudentDialog(BaseDialog):
         fields = [
             ("Class*:", "class_name", "combobox", classes, 20),
             ("Enrollment Date*:", "enrollment_date", "entry", 15),
-            ("Status:", "is_active", "combobox", ["Active", "Inactive"], 10)
+            ("Status:", "is_active", "combobox", ["Active", "Inactive"], 10),
+            ("New Student:", "is_new", "checkbox", None)
         ]
         
         for i, (label, field, widget_type, *args) in enumerate(fields):
@@ -221,12 +222,24 @@ class StudentDialog(BaseDialog):
             elif widget_type == "combobox":
                 widget = ttk.Combobox(parent, values=args[0], width=args[1])
                 widget.grid(row=i, column=1, sticky='w', pady=5)
+            elif widget_type == "checkbox":
+                var = tk.BooleanVar(value=True)
+                widget = ttk.Checkbutton(parent, variable=var, text='Is New Student')
+                widget.var = var
+                widget.grid(row=i, column=1, sticky='w', pady=5)
             
             self.widgets[field] = widget
         
         # Set default values
         self.widgets['enrollment_date'].insert(0, date.today().strftime('%Y-%m-%d'))
         self.widgets['is_active'].set("Active")
+        # default for new student
+        try:
+            if 'is_new' in self.widgets:
+                # default True for new student when creating
+                self.widgets['is_new'].var.set(True)
+        except Exception:
+            pass
     
     def load_student_data(self):
         """Load student data into form"""
@@ -258,6 +271,11 @@ class StudentDialog(BaseDialog):
             self.widgets['enrollment_date'].insert(0, self.student.enrollment_date.strftime('%Y-%m-%d'))
         
         self.widgets['is_active'].set("Active" if self.student.is_active else "Inactive")
+        try:
+            if 'is_new' in self.widgets:
+                self.widgets['is_new'].var.set(bool(getattr(self.student, 'is_new', True)))
+        except Exception:
+            pass
     
     def validate_input(self):
         """Validate form input"""
@@ -330,6 +348,14 @@ class StudentDialog(BaseDialog):
         data['class_name'] = self.widgets['class_name'].get().strip()
         data['enrollment_date'] = self.widgets['enrollment_date'].get().strip()
         data['is_active'] = self.widgets['is_active'].get() == "Active"
+        # New student flag (checkbox)
+        if 'is_new' in self.widgets:
+            try:
+                data['is_new'] = bool(self.widgets['is_new'].var.get())
+            except Exception:
+                data['is_new'] = True
+        else:
+            data['is_new'] = True
         
         return data
     
@@ -508,6 +534,7 @@ class TeacherDialog(BaseDialog):
             ("Phone:", "phone", "entry", 20),
             ("Email:", "email", "entry", 40),
             ("Hire Date*:", "hire_date", "entry", 15),
+            ("Salary Amount:", "salary_amount", "entry", 20),
             ("Status:", "is_active", "combobox", ["Active", "Inactive"], 10)
         ]
         
@@ -530,6 +557,7 @@ class TeacherDialog(BaseDialog):
         
         # Set default values
         self.widgets['hire_date'].insert(0, date.today().strftime('%Y-%m-%d'))
+        self.widgets['salary_amount'].insert(0, "0.00")
         # If editing an existing teacher, load their data into the form
         if self.teacher:
             try:
@@ -546,6 +574,10 @@ class TeacherDialog(BaseDialog):
                         self.widgets['hire_date'].insert(0, self.teacher.hire_date.strftime('%Y-%m-%d'))
                     except Exception:
                         pass
+                # Salary amount
+                salary = getattr(self.teacher, 'salary_amount', 0) or 0
+                self.widgets['salary_amount'].delete(0, tk.END)
+                self.widgets['salary_amount'].insert(0, str(salary))
                 # Status combobox expects 'Active'/'Inactive'
                 try:
                     self.widgets['is_active'].set('Active' if getattr(self.teacher, 'is_active', True) else 'Inactive')
@@ -576,6 +608,7 @@ class TeacherDialog(BaseDialog):
                 'email': self.widgets['email'].get().strip(),
                 'subject_specialization': self.widgets.get('specialization').get().strip(),
                 'hire_date': hire_date,
+                'salary_amount': float(self.widgets['salary_amount'].get().strip() or 0.0),
                 'is_active': self.widgets['is_active'].get() == 'Active'
             }
 
@@ -736,36 +769,47 @@ class FeePaymentDialog(BaseDialog):
         
         # Get fee types
         fee_types = FeeType.get_all()
-        fee_choices = [f"{ft.fee_name} ({format_currency(ft.amount)})" for ft in fee_types]
-        
+
+        # If student is continuing, registration and uniform should not be selectable
+        filtered_fee_types = []
+        for ft in fee_types:
+            name_l = ft.fee_name.lower()
+            if not getattr(self.student, 'is_new', True) and ('registration' in name_l or 'uniform' in name_l):
+                continue
+            filtered_fee_types.append(ft)
+
+        fee_choices = [f"{ft.fee_name} ({format_currency(ft.amount)})" for ft in filtered_fee_types]
+
+        self._fee_type_lookup = {f"{ft.fee_name} ({format_currency(ft.amount)})": ft for ft in filtered_fee_types}
+
         self.fee_combo = ttk.Combobox(payment_frame, textvariable=self.fee_type_var, values=fee_choices, width=40)
         self.fee_combo.grid(row=0, column=1, sticky='w', pady=5)
-        self.fee_combo.current(0) if fee_choices else None
+        if fee_choices:
+            self.fee_combo.current(0)
+            # prefill amount for the selected fee
+            self.on_fee_selected()
+        # bind selection to auto-fill amount
+        self.fee_combo.bind('<<ComboboxSelected>>', lambda e: self.on_fee_selected())
         
         # Amount
         ttk.Label(payment_frame, text="Amount*:").grid(row=1, column=0, sticky='e', padx=(0, 10), pady=5)
         self.amount_var = tk.StringVar()
         self.amount_entry = ttk.Entry(payment_frame, textvariable=self.amount_var, width=20)
         self.amount_entry.grid(row=1, column=1, sticky='w', pady=5)
-        
+
         # Payment date
-        ttk.Label(payment_frame, text="Payment Date*:").grid(row=2, column=0, sticky='e', padx=(0, 10), pady=5)
+        ttk.Label(payment_frame, text="Payment Date*: ").grid(row=2, column=0, sticky='e', padx=(0, 10), pady=5)
         self.date_var = tk.StringVar(value=date.today().strftime('%Y-%m-%d'))
         self.date_entry = ttk.Entry(payment_frame, textvariable=self.date_var, width=15)
         self.date_entry.grid(row=2, column=1, sticky='w', pady=5)
-        
+
         # Payment method
         ttk.Label(payment_frame, text="Payment Method:").grid(row=3, column=0, sticky='e', padx=(0, 10), pady=5)
         self.method_var = tk.StringVar(value="Cash")
         method_combo = ttk.Combobox(payment_frame, textvariable=self.method_var, 
                                    values=["Cash", "M-Pesa", "Bank Transfer", "Check", "Other"], width=15)
         method_combo.grid(row=3, column=1, sticky='w', pady=5)
-        
-        # Receipt number
-        ttk.Label(payment_frame, text="Receipt Number:").grid(row=4, column=0, sticky='e', padx=(0, 10), pady=5)
-        self.receipt_entry = ttk.Entry(payment_frame, width=20)
-        self.receipt_entry.grid(row=4, column=1, sticky='w', pady=5)
-        
+
         # Receipt number
         ttk.Label(payment_frame, text="Receipt Number:").grid(row=4, column=0, sticky='e', padx=(0, 10), pady=5)
         self.receipt_entry = ttk.Entry(payment_frame, width=20)
@@ -785,6 +829,29 @@ class FeePaymentDialog(BaseDialog):
 
         # Create standard dialog button box as well (OK/Cancel) for compatibility
         self.create_button_box(self.main_frame)
+
+    def on_fee_selected(self):
+        """Auto-fill amount when a fee type is selected; handle tuition overrides by class."""
+        try:
+            sel = self.fee_type_var.get()
+            if not sel:
+                return
+            ft = self._fee_type_lookup.get(sel)
+            if not ft:
+                return
+            fname = ft.fee_name.lower()
+            # Tuition override by class
+            if 'tuition' in fname:
+                cls = (getattr(self.student, 'class_name', '') or '').lower()
+                if any(k in cls for k in ('nursery', 'reception')):
+                    amt = 45000.0
+                else:
+                    amt = 85000.0
+            else:
+                amt = float(ft.amount)
+            self.amount_var.set(str(int(amt) if float(amt).is_integer() else f"{amt:.2f}"))
+        except Exception:
+            pass
     
     def validate_input(self):
         """Validate payment input"""
@@ -1272,7 +1339,7 @@ class AboutDialog(BaseDialog):
         info_text += f"Address: {config.Config.SCHOOL_ADDRESS}\n"
         info_text += f"Phone: {config.Config.SCHOOL_PHONE}\n"
         info_text += f"Email: {config.Config.SCHOOL_EMAIL}\n\n"
-        info_text += "© 2024 School Administration\n"
+        info_text += "© 2025 School Administration\n"
         info_text += "All rights reserved."
         
         ttk.Label(self.main_frame, text=info_text, justify='center').pack(expand=True, pady=20)

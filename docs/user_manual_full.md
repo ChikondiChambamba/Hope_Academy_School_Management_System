@@ -1,0 +1,180 @@
+Hope Academy School Management System — User Manual
+
+Overview
+--------
+This manual explains installation, configuration, and day-to-day use of the Hope Academy School Management System (desktop app). It covers key UI workflows, finance rules, database requirements, troubleshooting, and developer notes.
+
+Quick Facts
+-----------
+- Application: Python + Tkinter desktop app
+- Database: MySQL (schema in database/schema.sql)
+- Main features: Students, Teachers, Finance (fees & payments), Attendance, Inventory, Reports
+
+Prerequisites & Setup
+---------------------
+Required software
+- Python 3.8+ (3.10+ recommended)
+- MySQL server
+
+Install dependencies
+1. Create and activate a virtual environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+2. Install Python dependencies:
+
+```powershell
+pip install -r requirement.txt
+```
+
+Database initialization
+1. Create the database and run `database/schema.sql` or run `setup_database.py` if present and configured.
+2. Confirm the following tables/columns exist after schema migration:
+  - `students` (includes `is_new` boolean)
+  - `fee_types` (includes `academic_year`)
+  - `student_fees` (payments; includes `receipt_number`)
+  - `receipt_sequence` (per-day atomic sequence for receipts)
+  - `student_fee_exemptions`
+  - `teachers` (includes `salary_amount`)
+  - `teacher_salary_advances`
+
+3. Update `config.py` with database credentials and set `CURRENT_ACADEMIC_YEAR` to the active academic year used for fee types (for example: "2025-2026").
+
+Starting the application
+------------------------
+Activate the virtual environment and run:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python main.py
+```
+
+If the app is already running while you update code, restart it so the patched modules load correctly.
+
+User Interface Guide
+--------------------
+Main tabs
+- Dashboard: Quick metrics and shortcuts
+- Students: Add/edit students, view balances, and payment history
+- Teachers: Manage teacher profiles, salaries, and advances
+- Finance: Record payments, expenses, and manage fee types
+- Inventory: Track stock and items
+- Attendance: Record class attendance
+- Reports: Generate student lists, fee reports, and financial summaries
+
+Students
+--------
+- Add Student: Fill required fields — first name, last name, class, parent/guardian, phone, enrollment date. Set `is_new` to True for newly enrolled students.
+- Edit Student: Update contact and academic details. `teacher_code` and other stable identifiers are preserved on edit.
+- Deactivate/Delete: Use caution — deactivation keeps history, deletion removes the record.
+
+Teachers
+--------
+- Teacher records include `salary_amount` (monthly salary).
+- Salary advances: Record advances using the Finance/Salary workflow. Advances are stored in `teacher_salary_advances` and can be tracked / deducted later.
+
+Finance
+-------
+Fee types
+- Fee types are defined per academic year. Only fee types matching `config.Config.CURRENT_ACADEMIC_YEAR` are shown in fee selection UIs.
+- If you cannot see fee types, check the `academic_year` column on `fee_types` and update it to match `CURRENT_ACADEMIC_YEAR`.
+
+Recording payments
+- Open Finance → Record Fee Payment or use the student's profile to record payments.
+- When recording payment, you can search/select a student by ID or type their name. If you type a name, the system performs a fallback lookup in the database.
+- Leave Receipt Number blank to auto-generate. Receipts use the format: `REC-YYYYMMDD-XXXX`.
+
+Receipt generation and uniqueness
+- Receipts are created using a DB-backed per-day sequence (`receipt_sequence`) to avoid duplicate receipt numbers during concurrent inserts.
+- If you see a MySQL 1062 duplicate error, check that `receipt_sequence` exists and the application has insert/update permission.
+
+Business rules enforced by the app
+- Registration & Uniform fees only apply to students with `is_new = True`.
+- Tuition mapping by class: the UI/code applies tuition amounts based on the student's class (e.g., Nursery/Reception vs Grades 1–7). These are applied at runtime; fee_type rows keep historical values.
+- When a tuition payment is recorded for a student, other tuition fee types for that student are recorded as exemptions in `student_fee_exemptions` to prevent duplicate tuition charges.
+
+Student balances
+- Balances are computed per-student using only the fee types that apply to them (honoring `student_fee_exemptions` and `is_new`). Reports and the Student tab now use conditional aggregation queries so totals reflect applicable fees only.
+
+Expenses
+- Record general expenses from the Finance tab.
+- Expenses appear in financial summary reports and reduce the net collection for the selected period.
+
+Reports
+-------
+- Student Fees Report: Shows per-student expected amount, paid, and balance — respects exemptions and `is_new`.
+- Fee Collection Report: Lists individual payments with dates, payers, and receipts for a date range.
+- Expense Report: Lists recorded expenses between dates.
+- Financial Summary: Aggregates total collections and expenses by academic year or term.
+
+Files generated by reports are saved to the `exports/` folder by default.
+
+Database & Developer Notes
+-------------------------
+Key tables
+- `students` — student profile and flags (`is_new`)
+- `fee_types` — fee definitions, includes `academic_year` to scope fee types
+- `student_fees` — recorded fee payments, includes `receipt_number`
+- `receipt_sequence` — stores per-date sequence and prevents race conditions on receipts
+- `student_fee_exemptions` — per-student exemptions for specific fee types
+- `teachers`, `teacher_salary_advances` — teacher payroll and advances
+
+Important queries
+- The codebase centralizes SQL in `database/queries.py`. Student fee totals are computed using conditional `SUM(CASE WHEN ... THEN amount ELSE 0 END)` aggregations and LEFT JOINs to `student_fee_exemptions` so only applicable fees are summed.
+
+Applying schema changes
+- The repository includes `database/schema.sql`. Use `setup_database.py` or your preferred SQL client to apply schema migrations.
+- A helper script `apply_db_changes.py` may exist to apply the latest small edits (like adding `salary_amount` or creating `teacher_salary_advances`). Run it from the project root.
+
+Troubleshooting
+---------------
+Common issues
+- Fee types not visible
+  - Cause: `fee_types.academic_year` doesn't match `config.Config.CURRENT_ACADEMIC_YEAR`.
+  - Fix: Update the `academic_year` value in DB or update `config.py` to the correct academic year.
+
+- Duplicate receipt error (MySQL 1062)
+  - Cause: simultaneous inserts generated the same receipt number or `receipt_sequence` is missing/inaccessible.
+  - Fix: Verify `receipt_sequence` exists and has a PRIMARY KEY on `seq_date`. Ensure the DB user has INSERT and UPDATE privileges on it. If necessary, inspect the conflicting `student_fees` row and remove or reconcile it.
+
+- UI error referencing `amount_entry` or similar widget
+  - Cause: Running an older instance of the app after code changes.
+  - Fix: Restart the application so updated modules are loaded.
+
+- Incorrect student balances in reports
+  - Cause: Older query logic (cross-join) computed totals against all fee types.
+  - Fix: Upgrade to the current code which uses conditional aggregation; regenerate the report after restarting the app.
+
+Testing
+-------
+Run unit tests (if included):
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+pytest -q
+```
+
+If you want to run quick manual checks:
+1. Restart the app.
+2. Add a new student and set `is_new = True`.
+3. Record a registration payment; confirm registration/uniform apply only to `is_new` students.
+4. Record tuition for a student and confirm other tuition fee types are recorded as exemptions automatically.
+5. Generate Student Fees Report and confirm the expected vs paid vs balance values.
+
+Support & Feedback
+------------------
+When reporting bugs, include:
+- Steps to reproduce
+- Screenshots of the UI and any error messages
+- The content of the console output or traceback
+- A SQL snippet or row that demonstrates unexpected DB state (if applicable)
+
+If you'd like, I can also:
+- Produce a printable PDF of this manual
+- Add step-by-step screenshot guides for each major flow
+- Create quick test scripts to validate finance flows
+
+End of manual.

@@ -424,19 +424,35 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
     )
     
     # Get data
+    # Compute per-student totals by summing applicable fee types (respecting exemptions and
+    # registration/uniform rules) and subtracting payments. Avoid CROSS JOIN which sums
+    # every fee type for every student.
     query = """
-        SELECT 
+        SELECT
             s.student_code,
-            CONCAT(s.first_name, ' ', s.last_name) as student_name,
+            CONCAT(s.first_name, ' ', s.last_name) AS student_name,
             s.class,
-            COALESCE(SUM(ft.amount), 0) as total_due,
-            COALESCE(SUM(sf.amount_paid), 0) as total_paid,
-            COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
+            -- Sum expected amounts per student, zeroing-out exempted fees and fees that don't apply
+            COALESCE(SUM(
+                CASE
+                    WHEN sfe.exemption_id IS NOT NULL THEN 0
+                    WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
+                    ELSE ft.amount
+                END
+            ), 0) AS total_due,
+            COALESCE(SUM(sf.amount_paid), 0) AS total_paid,
+            COALESCE(SUM(
+                CASE
+                    WHEN sfe.exemption_id IS NOT NULL THEN 0
+                    WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
+                    ELSE ft.amount
+                END
+            ), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
         FROM students s
-        CROSS JOIN fee_types ft
-        LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-        WHERE s.is_active = 1 
-            AND ft.academic_year = %s
+        LEFT JOIN fee_types ft ON ft.academic_year = %s
+        LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
+        LEFT JOIN student_fees sf ON sf.student_id = s.student_id AND sf.fee_type_id = ft.fee_type_id
+        WHERE s.is_active = 1
     """
     
     conditions = []

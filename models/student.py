@@ -25,6 +25,7 @@ class Student:
     address: str = ""
     enrollment_date: Optional[date] = None
     is_active: bool = True
+    is_new: bool = True
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -112,7 +113,7 @@ class Student:
                     student_code = %s, first_name = %s, last_name = %s, 
                     class = %s, birth_date = %s, parent_name = %s, 
                     parent_phone = %s, parent_email = %s, address = %s, enrollment_date = %s,
-                    is_active = %s
+                    is_active = %s, is_new = %s
                     WHERE student_id = %s
                 """
                 params = (
@@ -127,6 +128,7 @@ class Student:
                     student_data['address'],
                     student_data['enrollment_date'],
                     student_data['is_active'],
+                    student_data.get('is_new', True),
                     self.student_id
                 )
                 
@@ -150,8 +152,8 @@ class Student:
                 query = """
                     INSERT INTO students 
                     (student_code, first_name, last_name, class, birth_date, 
-                     parent_name, parent_phone, parent_email, address, enrollment_date, is_active)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     parent_name, parent_phone, parent_email, address, enrollment_date, is_active, is_new)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 params = (
                     student_data['student_code'],
@@ -164,7 +166,8 @@ class Student:
                     student_data.get('parent_email'),
                     student_data['address'],
                     student_data['enrollment_date'],
-                    student_data['is_active']
+                    student_data['is_active'],
+                    student_data.get('is_new', True)
                 )
                 
                 student_id = db.execute_query(query, params)
@@ -458,13 +461,45 @@ class StudentManager:
         # Retrieve fee types for this academic year and adjust tuition fee if present
         from models.finance import FeeType
         fee_types = FeeType.get_all()
+
+        # Load any exemptions for this student (waived fee types)
+        try:
+            ex_rows = db.execute_query("SELECT fee_type_id FROM student_fee_exemptions WHERE student_id = %s", (student_id,), fetch=True)
+            exemptions = {r['fee_type_id'] for r in ex_rows} if ex_rows else set()
+        except Exception:
+            exemptions = set()
         total_due = 0.0
         adjusted_fee_details = []
 
+        # Determine if the student has paid any tuition already
+        paid_tuition_fee_type_ids = set()
+        for fd in fee_details:
+            if fd.get('fee_name') and 'tuition' in fd.get('fee_name').lower() and float(fd.get('paid_amount', 0)) > 0:
+                # map fee_name to fee_type_id by looking up in fee_types list
+                for ft in fee_types:
+                    if ft.fee_name == fd.get('fee_name'):
+                        paid_tuition_fee_type_ids.add(ft.fee_type_id)
+                        break
+
         for ft in fee_types:
-            amount = float(ft.amount)
-            if 'tuition' in ft.fee_name.lower():
-                amount = float(tuition_amount)
+            # skip exempted fee types
+            if ft.fee_type_id in exemptions:
+                continue
+
+            fname_l = ft.fee_name.lower()
+
+            # Registration and Uniform only apply to new students
+            if ('registration' in fname_l or 'uniform' in fname_l) and not getattr(student, 'is_new', True):
+                amount = 0.0
+            else:
+                amount = float(ft.amount)
+
+            # Tuition override: if another tuition has been paid, don't expect this one
+            if 'tuition' in fname_l:
+                if paid_tuition_fee_type_ids and ft.fee_type_id not in paid_tuition_fee_type_ids:
+                    amount = 0.0
+                else:
+                    amount = float(tuition_amount)
 
             # Find paid amount for this fee in fee_details
             paid = 0.0
