@@ -6,9 +6,10 @@ from tkinter import ttk, messagebox
 from datetime import datetime, date, time
 from typing import Optional, Dict, Any
 import config
-from models.student import Student
-from models.teacher import Teacher
+from models.student import Student, StudentManager
+from models.teacher import Teacher, TeacherManager
 from models.finance import FeeType, FeePayment
+from utils.helpers import format_currency, parse_currency
 
 class BaseDialog:
     """Base class for all dialogs"""
@@ -23,7 +24,8 @@ class BaseDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(title)
         self.dialog.geometry(f"{width}x{height}")
-        self.dialog.resizable(False, False)
+        # Allow vertical resizing so dialogs that are content-heavy don't clip buttons
+        self.dialog.resizable(False, True)
         
         # Center dialog
         self.center_dialog()
@@ -50,8 +52,23 @@ class BaseDialog:
     
     def create_button_box(self, frame):
         """Create standard button box (OK/Cancel)"""
-        button_frame = ttk.Frame(frame)
-        button_frame.pack(side='bottom', fill='x', pady=(20, 0))
+        # Decide whether to attach to the provided frame or the top-level dialog.
+        # If the provided frame already uses grid (has grid slaves), place the
+        # button frame using grid to avoid pack/grid conflicts. Otherwise,
+        # attach to the dialog root and pack.
+        try:
+            uses_grid = len(frame.grid_slaves()) > 0
+        except Exception:
+            uses_grid = False
+
+        if uses_grid:
+            button_frame = ttk.Frame(frame)
+            # Place at the next available row at the bottom
+            next_row = frame.grid_size()[1]
+            button_frame.grid(row=next_row, column=0, columnspan=99, sticky='ew', pady=(20, 0))
+        else:
+            button_frame = ttk.Frame(self.dialog)
+            button_frame.pack(side='bottom', fill='x', pady=(20, 0))
         
         ttk.Button(
             button_frame,
@@ -229,6 +246,8 @@ class StudentDialog(BaseDialog):
             self.widgets['parent_name'].insert(0, self.student.parent_name)
         if self.student.parent_phone:
             self.widgets['parent_phone'].insert(0, self.student.parent_phone)
+        if getattr(self.student, 'parent_email', None):
+            self.widgets['parent_email'].insert(0, self.student.parent_email)
         if self.student.address:
             self.widgets['address'].insert('1.0', self.student.address)
         
@@ -293,14 +312,14 @@ class StudentDialog(BaseDialog):
         data['first_name'] = self.widgets['first_name'].get().strip()
         data['last_name'] = self.widgets['last_name'].get().strip()
         data['birth_date'] = self.widgets['birth_date'].get().strip() or None
-        data['gender'] = self.widgets['gender'].get().strip() or None
         
         # Contact info
         data['parent_name'] = self.widgets['parent_name'].get().strip()
         data['parent_phone'] = self.widgets['parent_phone'].get().strip()
         
-        if 'parent_email' in self.widgets:
-            data['parent_email'] = self.widgets['parent_email'].get().strip() or None
+        # Parent email is collected and will be passed to the Student model
+        # now that the schema and model include `parent_email`.
+        data['parent_email'] = self.widgets['parent_email'].get().strip()
         
         if isinstance(self.widgets['address'], tk.Text):
             data['address'] = self.widgets['address'].get('1.0', tk.END).strip()
@@ -321,9 +340,8 @@ class StudentDialog(BaseDialog):
         
         try:
             student_data = self.get_student_data()
-            
-            if self.student:
-                # Update existing student
+            # If a Student object with an id was provided, treat as update.
+            if self.student and getattr(self.student, 'student_id', None):
                 success, message = StudentManager.update_student(self.student.student_id, student_data)
             else:
                 # Add new student
@@ -337,6 +355,138 @@ class StudentDialog(BaseDialog):
                 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save student: {str(e)}")
+
+
+class StudentPreviewDialog(BaseDialog):
+    """Read-only preview of a student's full information: personal, parent, finance."""
+
+    def __init__(self, parent, title, student: Student):
+        super().__init__(parent, title, 750, 600)
+        self.student = student
+        self.setup_ui()
+
+    def setup_ui(self):
+        notebook = ttk.Notebook(self.main_frame)
+        notebook.pack(fill='both', expand=True)
+
+        # Summary tab
+        summary_frame = ttk.Frame(notebook)
+        notebook.add(summary_frame, text='Summary')
+        self._build_summary_tab(summary_frame)
+
+        # Parent info tab
+        parent_frame = ttk.Frame(notebook)
+        notebook.add(parent_frame, text='Parent / Contact')
+        self._build_parent_tab(parent_frame)
+
+        # Finance tab: fee types and totals
+        finance_frame = ttk.Frame(notebook)
+        notebook.add(finance_frame, text='Finance')
+        self._build_finance_tab(finance_frame)
+
+        # Payment history tab
+        payments_frame = ttk.Frame(notebook)
+        notebook.add(payments_frame, text='Payments')
+        self._build_payments_tab(payments_frame)
+
+        # OK button only
+        btn_frame = ttk.Frame(self.dialog)
+        btn_frame.pack(side='bottom', fill='x', pady=(10,10))
+        ttk.Button(btn_frame, text='Close', command=self.dialog.destroy).pack(side='right', padx=10)
+
+    def _build_summary_tab(self, parent):
+        s = self.student
+        rows = [
+            ('Student Code', getattr(s, 'student_code', '')),
+            ('Name', f"{s.first_name} {s.last_name}"),
+            ('Class', getattr(s, 'class_name', '')),
+            ('Enrollment Date', s.enrollment_date.strftime('%Y-%m-%d') if getattr(s, 'enrollment_date', None) else ''),
+            ('Birth Date', s.birth_date.strftime('%Y-%m-%d') if getattr(s, 'birth_date', None) else ''),
+            ('Status', 'Active' if getattr(s, 'is_active', True) else 'Inactive')
+        ]
+
+        for i, (label, val) in enumerate(rows):
+            ttk.Label(parent, text=label+':', font=('TkDefaultFont', 10, 'bold')).grid(row=i, column=0, sticky='e', padx=(10,8), pady=6)
+            ttk.Label(parent, text=val).grid(row=i, column=1, sticky='w', padx=(0,10), pady=6)
+
+    def _build_parent_tab(self, parent):
+        s = self.student
+        rows = [
+            ('Parent/Guardian', s.parent_name or ''),
+            ('Phone', s.parent_phone or ''),
+            ('Email', getattr(s, 'parent_email', '') or ''),
+            ('Address', s.address or '')
+        ]
+
+        for i, (label, val) in enumerate(rows):
+            ttk.Label(parent, text=label+':', font=('TkDefaultFont', 10, 'bold')).grid(row=i, column=0, sticky='ne', padx=(10,8), pady=6)
+            if label == 'Address':
+                txt = tk.Text(parent, height=4, width=60)
+                txt.insert('1.0', val)
+                txt.configure(state='disabled')
+                txt.grid(row=i, column=1, sticky='w', padx=(0,10), pady=6)
+            else:
+                ttk.Label(parent, text=val).grid(row=i, column=1, sticky='w', padx=(0,10), pady=6)
+
+    def _build_finance_tab(self, parent):
+        # Fetch summary via StudentManager
+        try:
+            summary = StudentManager.get_student_financial_summary(self.student.student_id)
+        except Exception:
+            summary = {}
+
+        # Totals header
+        totals_frame = ttk.Frame(parent)
+        totals_frame.pack(fill='x', padx=8, pady=(8,4))
+        total_due = summary.get('total_due', 0.0)
+        total_paid = summary.get('total_paid', 0.0)
+        balance = summary.get('balance', 0.0)
+
+        ttk.Label(totals_frame, text='Total Due:', font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, sticky='e')
+        ttk.Label(totals_frame, text=format_currency(total_due)).grid(row=0, column=1, sticky='w', padx=6)
+        ttk.Label(totals_frame, text='Total Paid:', font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=2, sticky='e', padx=(20,0))
+        ttk.Label(totals_frame, text=format_currency(total_paid)).grid(row=0, column=3, sticky='w', padx=6)
+        ttk.Label(totals_frame, text='Balance:', font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=4, sticky='e', padx=(20,0))
+        ttk.Label(totals_frame, text=format_currency(balance)).grid(row=0, column=5, sticky='w', padx=6)
+
+        # Fee details tree
+        columns = ('Fee Type', 'Expected', 'Paid', 'Balance')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=10)
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=150)
+        tree.pack(fill='both', expand=True, padx=8, pady=8)
+
+        for fd in summary.get('fee_details', []):
+            tree.insert('', 'end', values=(
+                fd.get('fee_name'),
+                format_currency(fd.get('expected_amount', 0)),
+                format_currency(fd.get('paid_amount', 0)),
+                format_currency(fd.get('balance', 0))
+            ))
+
+    def _build_payments_tab(self, parent):
+        try:
+            history = StudentManager.get_payment_history(self.student.student_id)
+        except Exception:
+            history = []
+
+        columns = ('Date', 'Fee', 'Amount', 'Method', 'Receipt')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=12)
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=120)
+        tree.pack(fill='both', expand=True, padx=8, pady=8)
+
+        for p in history:
+            date_str = p.get('payment_date') if isinstance(p.get('payment_date'), str) else (p.get('payment_date').strftime('%Y-%m-%d') if p.get('payment_date') else '')
+            tree.insert('', 'end', values=(
+                date_str,
+                p.get('fee_name', ''),
+                format_currency(float(p.get('amount_paid', 0))),
+                p.get('payment_method', ''),
+                p.get('receipt_number', '')
+            ))
 
 
 class TeacherDialog(BaseDialog):
@@ -380,117 +530,172 @@ class TeacherDialog(BaseDialog):
         
         # Set default values
         self.widgets['hire_date'].insert(0, date.today().strftime('%Y-%m-%d'))
-        self.widgets['is_active'].set("Active")
-        
-        # Load data if editing
+        # If editing an existing teacher, load their data into the form
         if self.teacher:
-            self.load_teacher_data()
-        
-        # Create button box
+            try:
+                # Map fields from Teacher model to dialog widgets
+                self.widgets['teacher_code'].insert(0, getattr(self.teacher, 'teacher_code', '') or '')
+                self.widgets['first_name'].insert(0, getattr(self.teacher, 'first_name', '') or '')
+                self.widgets['last_name'].insert(0, getattr(self.teacher, 'last_name', '') or '')
+                self.widgets['specialization'].insert(0, getattr(self.teacher, 'subject_specialization', '') or '')
+                self.widgets['phone'].insert(0, getattr(self.teacher, 'phone', '') or '')
+                self.widgets['email'].insert(0, getattr(self.teacher, 'email', '') or '')
+                if getattr(self.teacher, 'hire_date', None):
+                    try:
+                        self.widgets['hire_date'].delete(0, tk.END)
+                        self.widgets['hire_date'].insert(0, self.teacher.hire_date.strftime('%Y-%m-%d'))
+                    except Exception:
+                        pass
+                # Status combobox expects 'Active'/'Inactive'
+                try:
+                    self.widgets['is_active'].set('Active' if getattr(self.teacher, 'is_active', True) else 'Inactive')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        # Add dialog buttons (OK / Cancel)
         self.create_button_box(self.main_frame)
-    
-    def load_teacher_data(self):
-        """Load teacher data into form"""
-        if not self.teacher:
-            return
-        
-        self.widgets['teacher_code'].insert(0, self.teacher.teacher_code)
-        self.widgets['first_name'].insert(0, self.teacher.first_name)
-        self.widgets['last_name'].insert(0, self.teacher.last_name)
-        
-        if self.teacher.subject_specialization:
-            self.widgets['specialization'].insert(0, self.teacher.subject_specialization)
-        if self.teacher.phone:
-            self.widgets['phone'].insert(0, self.teacher.phone)
-        if self.teacher.email:
-            self.widgets['email'].insert(0, self.teacher.email)
-        
-        if self.teacher.hire_date:
-            self.widgets['hire_date'].insert(0, self.teacher.hire_date.strftime('%Y-%m-%d'))
-        
-        self.widgets['is_active'].set("Active" if self.teacher.is_active else "Inactive")
-    
-    def validate_input(self):
-        """Validate form input"""
-        # Required fields
-        required_fields = ['first_name', 'last_name', 'hire_date']
-        
-        for field in required_fields:
-            value = self.widgets[field].get().strip()
-            if not value:
-                messagebox.showerror("Validation Error", f"{field.replace('_', ' ').title()} is required")
-                return False
-        
-        # Validate date
-        hire_date = self.widgets['hire_date'].get().strip()
-        try:
-            datetime.strptime(hire_date, '%Y-%m-%d')
-        except ValueError:
-            messagebox.showerror("Validation Error", "Invalid date format. Use YYYY-MM-DD")
-            return False
-        
-        # Validate email if provided
-        email = self.widgets['email'].get().strip()
-        if email and '@' not in email:
-            messagebox.showerror("Validation Error", "Invalid email address")
-            return False
-        
-        return True
-    
-    def get_teacher_data(self):
-        """Get teacher data from form"""
-        data = {}
-        
-        data['teacher_code'] = self.widgets['teacher_code'].get().strip()
-        data['first_name'] = self.widgets['first_name'].get().strip()
-        data['last_name'] = self.widgets['last_name'].get().strip()
-        data['subject_specialization'] = self.widgets['specialization'].get().strip() or None
-        data['phone'] = self.widgets['phone'].get().strip() or None
-        data['email'] = self.widgets['email'].get().strip() or None
-        data['hire_date'] = self.widgets['hire_date'].get().strip()
-        data['is_active'] = self.widgets['is_active'].get() == "Active"
-        
-        return data
-    
+
     def on_ok(self):
-        """Save teacher data"""
-        if not self.validate_input():
+        """Save or update teacher record"""
+        # Basic validation
+        first_name = self.widgets['first_name'].get().strip()
+        last_name = self.widgets['last_name'].get().strip()
+        hire_date = self.widgets['hire_date'].get().strip()
+
+        if not first_name or not last_name or not hire_date:
+            messagebox.showerror("Validation Error", "First name, Last name and Hire date are required")
             return
-        
+
         try:
-            teacher_data = self.get_teacher_data()
-            
+            teacher_data = {
+                'teacher_code': self.widgets['teacher_code'].get().strip(),
+                'first_name': first_name,
+                'last_name': last_name,
+                'phone': self.widgets['phone'].get().strip(),
+                'email': self.widgets['email'].get().strip(),
+                'subject_specialization': self.widgets.get('specialization').get().strip(),
+                'hire_date': hire_date,
+                'is_active': self.widgets['is_active'].get() == 'Active'
+            }
+
             if self.teacher:
-                # Update existing teacher
-                self.teacher.first_name = teacher_data['first_name']
-                self.teacher.last_name = teacher_data['last_name']
-                self.teacher.subject_specialization = teacher_data['subject_specialization']
-                self.teacher.phone = teacher_data['phone']
-                self.teacher.email = teacher_data['email']
-                self.teacher.hire_date = datetime.strptime(teacher_data['hire_date'], '%Y-%m-%d').date()
-                self.teacher.is_active = teacher_data['is_active']
-                
-                success, message = self.teacher.save()
+                # Update existing
+                success, message = TeacherManager.update_teacher(self.teacher.teacher_id, teacher_data)
+                if success:
+                    self.result = True
+                    messagebox.showinfo("Success", message)
+                    self.dialog.destroy()
+                else:
+                    messagebox.showerror("Error", message)
             else:
-                # Add new teacher
-                teacher = Teacher.from_dict(teacher_data)
-                success, message = teacher.save()
-            
-            if success:
-                self.result = True
-                self.dialog.destroy()
-            else:
-                messagebox.showerror("Error", message)
-                
+                # Create new
+                success, message, teacher = TeacherManager.create_teacher(teacher_data)
+                if success:
+                    self.result = True
+                    messagebox.showinfo("Success", message)
+                    self.dialog.destroy()
+                else:
+                    messagebox.showerror("Error", message)
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save teacher: {str(e)}")
+
+
+class FeeTypeDialog(BaseDialog):
+    """Dialog to add/edit a fee type"""
+    def __init__(self, parent, title, fee_type=None):
+        super().__init__(parent, title, 420, 320)
+        self.fee_type = fee_type or {}
+        self.result_data = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        frame = self.main_frame
+        # Fee name
+        ttk.Label(frame, text="Fee Name:").grid(row=0, column=0, sticky='e', padx=5, pady=8)
+        self.name_var = tk.StringVar(value=self.fee_type.get('fee_name', ''))
+        ttk.Entry(frame, textvariable=self.name_var, width=30).grid(row=0, column=1, sticky='w', pady=8)
+
+        # Amount
+        ttk.Label(frame, text="Amount:").grid(row=1, column=0, sticky='e', padx=5, pady=8)
+        self.amount_var = tk.StringVar(value=str(self.fee_type.get('amount', '')))
+        ttk.Entry(frame, textvariable=self.amount_var, width=20).grid(row=1, column=1, sticky='w', pady=8)
+
+        # Term
+        ttk.Label(frame, text="Term:").grid(row=2, column=0, sticky='e', padx=5, pady=8)
+        self.term_var = tk.StringVar(value=self.fee_type.get('term', ''))
+        ttk.Entry(frame, textvariable=self.term_var, width=20).grid(row=2, column=1, sticky='w', pady=8)
+
+        # Required
+        self.req_var = tk.IntVar(value=1 if self.fee_type.get('is_required', True) else 0)
+        ttk.Checkbutton(frame, text='Required', variable=self.req_var).grid(row=3, column=1, sticky='w', pady=8)
+
+        self.create_button_box(frame)
+
+    def on_ok(self):
+        # Basic validation
+        name = self.name_var.get().strip()
+        if not name:
+            messagebox.showerror('Validation', 'Fee name is required')
+            return
+        try:
+            amount = float(self.amount_var.get().strip()) if self.amount_var.get().strip() else 0.0
+        except Exception:
+            messagebox.showerror('Validation', 'Invalid amount')
+            return
+
+        term = self.term_var.get().strip() or config.Config.CURRENT_TERM
+        is_required = bool(self.req_var.get())
+
+        self.result_data = {
+            'fee_name': name,
+            'amount': amount,
+            'term': term,
+            'is_required': is_required
+        }
+        self.result = True
+        self.dialog.destroy()
+
+
+class ExpenseCategoryDialog(BaseDialog):
+    """Dialog to add/edit expense category"""
+    def __init__(self, parent, title, category=None):
+        super().__init__(parent, title, 380, 260)
+        self.category = category or {}
+        self.result_data = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        frame = self.main_frame
+        ttk.Label(frame, text='Category Name:').grid(row=0, column=0, sticky='e', padx=5, pady=8)
+        self.name_var = tk.StringVar(value=self.category.get('name', ''))
+        ttk.Entry(frame, textvariable=self.name_var, width=30).grid(row=0, column=1, sticky='w', pady=8)
+
+        ttk.Label(frame, text='Description:').grid(row=1, column=0, sticky='ne', padx=5, pady=8)
+        self.desc_text = tk.Text(frame, height=5, width=30)
+        self.desc_text.grid(row=1, column=1, sticky='w', pady=8)
+        if self.category.get('description'):
+            self.desc_text.insert('1.0', self.category.get('description'))
+
+        self.create_button_box(frame)
+
+    def on_ok(self):
+        name = self.name_var.get().strip()
+        if not name:
+            messagebox.showerror('Validation', 'Category name is required')
+            return
+        desc = self.desc_text.get('1.0', tk.END).strip()
+        self.result_data = {'name': name, 'description': desc}
+        self.result = True
+        self.dialog.destroy()
 
 
 class FeePaymentDialog(BaseDialog):
     """Dialog for recording fee payments"""
     
     def __init__(self, parent, title, student, fee_summary):
-        super().__init__(parent, title, 500, 450)
+        super().__init__(parent, title, 500, 480)
         self.student = student
         self.fee_summary = fee_summary
         self.setup_ui()
@@ -515,9 +720,9 @@ class FeePaymentDialog(BaseDialog):
         total_paid = self.fee_summary.get('total_paid', 0)
         balance = self.fee_summary.get('total_balance', 0)
         
-        summary_text = f"Total Due: ${total_due:,.2f}\n"
-        summary_text += f"Total Paid: ${total_paid:,.2f}\n"
-        summary_text += f"Balance: ${balance:,.2f}"
+        summary_text = f"Total Due: {format_currency(total_due)}\n"
+        summary_text += f"Total Paid: {format_currency(total_paid)}\n"
+        summary_text += f"Balance: {format_currency(balance)}"
         
         ttk.Label(summary_frame, text=summary_text).pack(anchor='w')
         
@@ -531,7 +736,7 @@ class FeePaymentDialog(BaseDialog):
         
         # Get fee types
         fee_types = FeeType.get_all()
-        fee_choices = [f"{ft.fee_name} (${ft.amount:,.2f})" for ft in fee_types]
+        fee_choices = [f"{ft.fee_name} ({format_currency(ft.amount)})" for ft in fee_types]
         
         self.fee_combo = ttk.Combobox(payment_frame, textvariable=self.fee_type_var, values=fee_choices, width=40)
         self.fee_combo.grid(row=0, column=1, sticky='w', pady=5)
@@ -561,12 +766,24 @@ class FeePaymentDialog(BaseDialog):
         self.receipt_entry = ttk.Entry(payment_frame, width=20)
         self.receipt_entry.grid(row=4, column=1, sticky='w', pady=5)
         
-        # Description
-        ttk.Label(payment_frame, text="Description:").grid(row=5, column=0, sticky='ne', padx=(0, 10), pady=5)
+        # Receipt number
+        ttk.Label(payment_frame, text="Receipt Number:").grid(row=4, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.receipt_entry = ttk.Entry(payment_frame, width=20)
+        self.receipt_entry.grid(row=4, column=1, sticky='w', pady=5)
+
+        # Buttons specific to payment form (placed directly after receipt so they remain visible)
+        btn_frame = ttk.Frame(payment_frame)
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=(10, 0))
+
+        ttk.Button(btn_frame, text="Record Payment", command=self.on_ok).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.on_cancel).pack(side='left')
+
+        # Description (moved below buttons)
+        ttk.Label(payment_frame, text="Description:").grid(row=6, column=0, sticky='ne', padx=(0, 10), pady=5)
         self.desc_text = tk.Text(payment_frame, height=3, width=30)
-        self.desc_text.grid(row=5, column=1, sticky='w', pady=5)
-        
-        # Create button box
+        self.desc_text.grid(row=6, column=1, sticky='w', pady=5)
+
+        # Create standard dialog button box as well (OK/Cancel) for compatibility
         self.create_button_box(self.main_frame)
     
     def validate_input(self):
@@ -631,6 +848,13 @@ class FeePaymentDialog(BaseDialog):
             success, message = fee_payment.save()
             
             if success:
+                # Notify application to refresh totals and views
+                try:
+                    root = self.dialog.winfo_toplevel()
+                    root.event_generate("<<PaymentRecorded>>")
+                except Exception:
+                    pass
+
                 self.result = True
                 messagebox.showinfo("Success", message)
                 self.dialog.destroy()

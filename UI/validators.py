@@ -1160,9 +1160,13 @@ class ValidationHelper:
     def format_currency(amount: float) -> str:
         """Format amount as currency"""
         try:
-            return f"${amount:,.2f}"
+            from utils.helpers import format_currency as _fmt
+            return _fmt(float(amount))
         except:
-            return str(amount)
+            try:
+                return f"{float(amount):,.2f}"
+            except:
+                return str(amount)
     
     @staticmethod
     def parse_currency(currency_str: str) -> float:

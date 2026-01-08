@@ -64,6 +64,16 @@ class TeachersTab:
             command=self.load_teachers
         )
         self.refresh_button.pack(side='right', padx=(5, 0))
+
+        # Show inactive checkbox
+        self.show_inactive_var = tk.IntVar(value=0)
+        self.show_inactive_cb = ttk.Checkbutton(
+            right_frame if 'right_frame' in locals() else controls_frame,
+            text='Show Inactive',
+            variable=self.show_inactive_var,
+            command=self.load_teachers
+        )
+        self.show_inactive_cb.pack(side='right', padx=(5,0))
         
         # Search frame
         search_frame = ttk.Frame(controls_frame)
@@ -150,8 +160,9 @@ class TeachersTab:
             self.teachers_tree.delete(item)
         
         try:
-            # Get all teachers
-            teachers = Teacher.get_all(active_only=True)
+            # Get all teachers (respect Show Inactive checkbox)
+            active_only = False if getattr(self, 'show_inactive_var', None) and self.show_inactive_var.get() else True
+            teachers = Teacher.get_all(active_only=active_only)
             
             # Insert into treeview
             for teacher in teachers:
@@ -278,15 +289,19 @@ class TeachersTab:
             return
         
         try:
-            # Deactivate teacher
-            success, message = TeacherManager.delete_teacher(teacher_id)
-            
+            # Ask whether to deactivate or permanently delete
+            perm = messagebox.askyesno("Permanent Delete?", "Delete permanently?\nYes = permanently delete the teacher and their record.\nNo = deactivate (set inactive).")
+            if perm:
+                success, message = TeacherManager.permanently_delete_teacher(teacher_id)
+            else:
+                success, message = TeacherManager.delete_teacher(teacher_id)
+
             if success:
                 messagebox.showinfo("Success", message)
                 self.load_teachers()
             else:
                 messagebox.showerror("Error", message)
-                
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to delete teacher: {str(e)}")
     

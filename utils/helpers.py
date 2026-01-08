@@ -40,9 +40,38 @@ def check_database_connection() -> bool:
 def format_currency(amount: float) -> str:
     """Format amount as currency"""
     try:
-        return f"${amount:,.2f}"
+        symbol = getattr(config.Config, 'CURRENCY_SYMBOL', '$')
+        return f"{symbol}{amount:,.2f}"
     except:
-        return f"${amount}"
+        symbol = getattr(config.Config, 'CURRENCY_SYMBOL', '$')
+        return f"{symbol}{amount}"
+
+
+def parse_currency(value: str) -> float:
+    """Parse a formatted currency string into a float.
+
+    Handles the configured currency symbol and common separators.
+    Returns 0.0 for empty or unparsable values.
+    """
+    try:
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        s = str(value)
+        symbol = getattr(config.Config, 'CURRENCY_SYMBOL', '$').strip()
+        if symbol and symbol in s:
+            s = s.replace(symbol, '')
+        # remove common punctuation
+        s = s.replace(',', '').strip()
+        # remove any other non-numeric characters (like currency names, symbols)
+        import re
+        m = re.search(r"[-+]?[0-9]*\.?[0-9]+", s)
+        if m:
+            return float(m.group(0))
+        return 0.0
+    except:
+        return 0.0
 
 def format_date(date_obj: Any) -> str:
     """Format date object to string"""

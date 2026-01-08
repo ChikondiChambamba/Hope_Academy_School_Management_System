@@ -10,6 +10,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch, cm
 import config
 from database.connection import db
+from utils.helpers import format_currency, parse_currency
 
 def generate_fee_collection_report(filename, start_date=None, end_date=None):
     """Generate fee collection report"""
@@ -72,7 +73,7 @@ def generate_fee_collection_report(filename, start_date=None, end_date=None):
     # Summary
     summary_data = [
         ['Total Records:', len(data)],
-        ['Total Amount:', f"${total_amount:,.2f}"],
+        ['Total Amount:', format_currency(total_amount)],
         ['Start Date:', start_date],
         ['End Date:', end_date]
     ]
@@ -98,13 +99,13 @@ def generate_fee_collection_report(filename, start_date=None, end_date=None):
         table_data = [['Date', 'Student Code', 'Name', 'Class', 'Fee Type', 'Amount', 'Method', 'Receipt']]
         
         for row in data:
-            table_data.append([
+                table_data.append([
                 row['payment_date'].strftime('%Y-%m-%d') if row['payment_date'] else '',
                 row['student_code'],
                 row['student_name'],
                 row['class'],
                 row['fee_name'],
-                f"${row['amount_paid']:,.2f}",
+                    format_currency(float(row['amount_paid'])),
                 row['payment_method'],
                 row['receipt_number'] or ''
             ])
@@ -193,7 +194,7 @@ def generate_expense_report(filename, start_date=None, end_date=None):
     # Summary
     summary_data = [
         ['Total Records:', len(data)],
-        ['Total Amount:', f"${total_amount:,.2f}"],
+        ['Total Amount:', format_currency(total_amount)],
         ['Start Date:', start_date],
         ['End Date:', end_date]
     ]
@@ -223,7 +224,7 @@ def generate_expense_report(filename, start_date=None, end_date=None):
                 row['expense_date'].strftime('%Y-%m-%d') if row['expense_date'] else '',
                 row['description'],
                 row['category'],
-                f"${row['amount']:,.2f}",
+                format_currency(float(row['amount'])),
                 row['payment_method'],
                 row['receipt_number'] or '',
                 row['item_name'] or ''
@@ -323,9 +324,9 @@ def generate_financial_summary_report(filename, academic_year=None, term=None):
     
     # Overall summary
     summary_data = [
-        ['Total Fee Collections:', f"${total_fees:,.2f}"],
-        ['Total Expenses:', f"${total_expenses:,.2f}"],
-        ['Net Balance:', f"${net_balance:,.2f}"],
+        ['Total Fee Collections:', format_currency(total_fees)],
+        ['Total Expenses:', format_currency(total_expenses)],
+        ['Net Balance:', format_currency(net_balance)],
         ['', ''],
         ['Fee Collections (Monthly):', ''],
         ['', '']
@@ -358,7 +359,7 @@ def generate_financial_summary_report(filename, academic_year=None, term=None):
             month_name = months[row['month'] - 1] if 1 <= row['month'] <= 12 else f"Month {row['month']}"
             fee_table_data.append([
                 month_name,
-                f"${row['total_fees']:,.2f}",
+                format_currency(float(row['total_fees'])),
                 row['payment_count']
             ])
         
@@ -385,7 +386,7 @@ def generate_financial_summary_report(filename, academic_year=None, term=None):
         for row in expense_data:
             expense_table_data.append([
                 row['category'],
-                f"${row['total_amount']:,.2f}",
+                format_currency(float(row['total_amount'])),
                 row['expense_count']
             ])
         
@@ -487,9 +488,9 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
     # Summary
     summary_data = [
         ['Total Students:', len(data)],
-        ['Total Fees Due:', f"${total_due:,.2f}"],
-        ['Total Fees Paid:', f"${total_paid:,.2f}"],
-        ['Total Balance:', f"${total_balance:,.2f}"]
+        ['Total Fees Due:', format_currency(total_due)],
+        ['Total Fees Paid:', format_currency(total_paid)],
+        ['Total Balance:', format_currency(total_balance)]
     ]
     
     summary_table = Table(summary_data, colWidths=[2*inch, 2*inch])
@@ -514,7 +515,7 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
         
         for row in data:
             balance = float(row['balance'])
-            balance_text = f"${balance:,.2f}"
+            balance_text = format_currency(balance)
             
             # Color code balances
             if balance > 0:
@@ -522,12 +523,12 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
             elif balance < 0:
                 balance_text = f"<font color='green'>{balance_text} (Credit)</font>"
             
-            table_data.append([
+                table_data.append([
                 row['student_code'],
                 row['student_name'],
                 row['class'],
-                f"${float(row['total_due']):,.2f}",
-                f"${float(row['total_paid']):,.2f}",
+                format_currency(float(row['total_due'])),
+                format_currency(float(row['total_paid'])),
                 balance_text
             ])
         
@@ -545,9 +546,9 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
                 row['student_code'],
                 row['student_name'],
                 row['class'],
-                f"${float(row['total_due']):,.2f}",
-                f"${float(row['total_paid']):,.2f}",
-                f"${float(row['balance']):,.2f}"
+                format_currency(float(row['total_due'])),
+                format_currency(float(row['total_paid'])),
+                format_currency(float(row['balance']))
             ])
         
         table = Table(simple_table_data, colWidths=[0.8*inch, 1.5*inch, 0.7*inch, 1*inch, 1*inch, 1*inch])
@@ -564,7 +565,7 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
         
         # Color rows based on balance
         for i in range(1, len(simple_table_data)):
-            balance_val = float(simple_table_data[i][5].replace('$', '').replace(',', ''))
+            balance_val = float(parse_currency(simple_table_data[i][5]))
             if balance_val > 0:
                 table.setStyle(TableStyle([('TEXTCOLOR', (0, i), (-1, i), colors.red)]))
             elif balance_val < 0:

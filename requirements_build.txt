@@ -1,0 +1,13 @@
+# Build dependencies
+pyinstaller==5.13.2
+pyinstaller-hooks-contrib==2023.10
+upx==4.0.2  # Download from https://upx.github.io
+
+# For creating icons
+Pillow==10.0.0
+
+# For testing installer
+innoextract==1.9  # For extracting InnoSetup installers for testing
+
+# Optional: For creating custom icons
+pywin32==306  # Windows API access

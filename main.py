@@ -34,10 +34,27 @@ class Application:
                     sys.exit(0)
             
             # Initialize main window
+            # Apply theme settings
+            try:
+                from tkinter import ttk
+                style = ttk.Style(self.root)
+                # Use configured theme
+                theme = getattr(__import__('config').Config, 'UI', {}).get('theme', 'clam')
+                style.theme_use(theme)
+
+                # Dark mode adjustments
+                if getattr(__import__('config').Config, 'THEME_MODE', 'light') == 'dark':
+                    style.configure('.', background='#2b2b2b', foreground='#e6e6e6')
+                    style.configure('TLabel', background='#2b2b2b', foreground='#e6e6e6')
+                    style.configure('TFrame', background='#2b2b2b')
+                    style.configure('Treeview', background='#222222', fieldbackground='#222222', foreground='#e6e6e6')
+            except Exception:
+                pass
+
             self.main_window = MainWindow(self.root)
             
             # Set window properties
-            self.root.title("Primary School Management System")
+            self.root.title("Hope Academy Primary School Management System")
             self.root.geometry("1200x700")
             self.root.minsize(1000, 600)
             
@@ -69,6 +86,13 @@ class Application:
             icon_path = os.path.join('assets', 'icons', 'app_icon.ico')
             if os.path.exists(icon_path):
                 self.root.iconbitmap(icon_path)
+            else:
+                # Override default Tk icon with an empty image to remove the tkinter symbol
+                try:
+                    img = tk.PhotoImage()
+                    self.root.iconphoto(False, img)
+                except Exception:
+                    pass
         except:
             pass  # Icon not essential
     

@@ -26,6 +26,12 @@ class MainWindow:
         
         # Create notebook for tabs
         self.create_tabs()
+        # Bind application-wide events
+        try:
+            # When a payment is recorded in any dialog, refresh all tabs
+            self.root.bind("<<PaymentRecorded>>", lambda e: self.refresh_all())
+        except Exception:
+            pass
         
         # Create status bar
         self.create_status_bar()
@@ -56,6 +62,14 @@ class MainWindow:
         style.configure('Danger.TButton',
                        foreground='white',
                        background=config.Config.UI['danger_color'])
+
+        # Default button color for any unstyled buttons
+        try:
+            default_btn_bg = config.Config.UI.get('button_color', config.Config.UI['primary_color'])
+            style.configure('TButton', background=default_btn_bg, foreground='white')
+            style.map('TButton', background=[('active', config.Config.UI['secondary_color'])])
+        except Exception:
+            pass
         
         # Configure labels
         style.configure('Title.TLabel',
@@ -469,56 +483,97 @@ class MainWindow:
     
     def send_notifications(self):
         """Send notifications to parents"""
-        from UI.dialogs import NotificationDialog
-        dialog = NotificationDialog(self.root)
-        dialog.show()
+        # Notifications UI is not implemented as a dialog in `UI.dialogs`.
+        # If a Notifications tab exists, select it; otherwise inform the user.
+        try:
+            if 'Notifications' in self.tabs:
+                idx = list(self.tabs.keys()).index('Notifications')
+                self.notebook.select(idx)
+                return
+        except Exception:
+            pass
+
+        messagebox.showinfo("Notifications", "Notification system is not configured.\n"
+                            "You can manage notifications from the Reports/Tools menu when available.")
     
     def generate_student_list(self):
         """Generate student list report"""
         from reports.generators.student_reports import generate_student_list_report
-        generate_student_list_report()
+        from datetime import date
+        import config
+        reports_dir = config.Config.PATHS.get('reports')
+        fname = reports_dir / f"student_list_{date.today().strftime('%Y%m%d')}.pdf"
+        generate_student_list_report(str(fname))
         self.update_status("Student list report generated")
     
     def generate_student_fees_report(self):
         """Generate student fees report"""
         from reports.generators.financial_reports import generate_student_fees_report
-        generate_student_fees_report()
+        from datetime import date
+        import config
+        reports_dir = config.Config.PATHS.get('reports')
+        fname = reports_dir / f"student_fees_{date.today().strftime('%Y%m%d')}.pdf"
+        generate_student_fees_report(str(fname))
         self.update_status("Student fees report generated")
     
     def generate_attendance_report(self):
         """Generate attendance report"""
         from reports.generators.student_reports import generate_attendance_summary_report
-        generate_attendance_summary_report()
+        from datetime import date
+        import config
+        reports_dir = config.Config.PATHS.get('reports')
+        fname = reports_dir / f"attendance_summary_{date.today().strftime('%Y%m%d')}.pdf"
+        generate_attendance_summary_report(str(fname))
         self.update_status("Attendance report generated")
     
     def generate_fee_collection_report(self):
         """Generate fee collection report"""
         from reports.generators.financial_reports import generate_fee_collection_report
-        generate_fee_collection_report()
+        from datetime import date
+        import config
+        reports_dir = config.Config.PATHS.get('reports')
+        fname = reports_dir / f"fee_collection_{date.today().strftime('%Y%m%d')}.pdf"
+        generate_fee_collection_report(str(fname))
         self.update_status("Fee collection report generated")
     
     def generate_expense_report(self):
         """Generate expense report"""
         from reports.generators.financial_reports import generate_expense_report
-        generate_expense_report()
+        from datetime import date
+        import config
+        reports_dir = config.Config.PATHS.get('reports')
+        fname = reports_dir / f"expense_{date.today().strftime('%Y%m%d')}.pdf"
+        generate_expense_report(str(fname))
         self.update_status("Expense report generated")
     
     def generate_financial_summary(self):
         """Generate financial summary report"""
         from reports.generators.financial_reports import generate_financial_summary_report
-        generate_financial_summary_report()
+        from datetime import date
+        import config
+        reports_dir = config.Config.PATHS.get('reports')
+        fname = reports_dir / f"financial_summary_{date.today().strftime('%Y%m%d')}.pdf"
+        generate_financial_summary_report(str(fname))
         self.update_status("Financial summary generated")
     
     def generate_inventory_list(self):
         """Generate inventory list report"""
         from reports.generators.inventory_reports import generate_inventory_list_report
-        generate_inventory_list_report()
+        from datetime import date
+        import config
+        reports_dir = config.Config.PATHS.get('reports')
+        fname = reports_dir / f"inventory_list_{date.today().strftime('%Y%m%d')}.pdf"
+        generate_inventory_list_report(str(fname))
         self.update_status("Inventory list report generated")
     
     def generate_low_stock_report(self):
         """Generate low stock report"""
         from reports.generators.inventory_reports import generate_low_stock_report
-        generate_low_stock_report()
+        from datetime import date
+        import config
+        reports_dir = config.Config.PATHS.get('reports')
+        fname = reports_dir / f"low_stock_{date.today().strftime('%Y%m%d')}.pdf"
+        generate_low_stock_report(str(fname))
         self.update_status("Low stock report generated")
     
     def open_manual(self):

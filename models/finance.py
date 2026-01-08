@@ -1,3 +1,4 @@
+
 """
 Financial models for fee and expense management
 """
@@ -177,40 +178,53 @@ class FeePayment:
         if not is_valid:
             return False, message
         
-        try:
-            # Generate receipt number if not provided
-            if not self.receipt_number:
-                self.receipt_number = self.generate_receipt_number()
-            
-            query = """
-                INSERT INTO student_fees 
-                (student_id, fee_type_id, amount_paid, payment_date, 
-                 payment_method, receipt_number, description)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """
-            params = (
-                self.student_id,
-                self.fee_type_id,
-                self.amount_paid,
-                self.payment_date,
-                self.payment_method,
-                self.receipt_number,
-                self.description
-            )
-            
-            self.fee_id = db.execute_query(query, params)
-            return True, f"Payment recorded successfully. Receipt: {self.receipt_number}"
-            
-        except Exception as e:
-            return False, f"Database error: {str(e)}"
+        # Attempt insert with retries to handle rare receipt-number collisions
+        attempts = 0
+        max_attempts = 5
+        while attempts < max_attempts:
+            try:
+                # Generate receipt number if not provided
+                if not self.receipt_number:
+                    self.receipt_number = self.generate_receipt_number()
+
+                query = """
+                    INSERT INTO student_fees 
+                    (student_id, fee_type_id, amount_paid, payment_date, 
+                     payment_method, receipt_number, description)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """
+                params = (
+                    self.student_id,
+                    self.fee_type_id,
+                    self.amount_paid,
+                    self.payment_date,
+                    self.payment_method,
+                    self.receipt_number,
+                    self.description
+                )
+
+                self.fee_id = db.execute_query(query, params)
+                return True, f"Payment recorded successfully. Receipt: {self.receipt_number}"
+
+            except Exception as e:
+                msg = str(e)
+                # If the error is a duplicate-receipt collision, regenerate and retry
+                if 'Duplicate entry' in msg and 'receipt_number' in msg and attempts < max_attempts - 1:
+                    attempts += 1
+                    # create a new receipt and try again
+                    self.receipt_number = self.generate_receipt_number()
+                    continue
+                return False, f"Database error: {msg}"
+
+        return False, "Database error: failed to generate unique receipt after retries"
     
     def generate_receipt_number(self) -> str:
         """Generate unique receipt number"""
         try:
             # Format: REC-YYYYMMDD-XXXX
             date_str = datetime.now().strftime('%Y%m%d')
-            
-            # Get next sequence number for today
+
+            # Start with the count-based suggestion, then verify uniqueness
             query = """
                 SELECT COUNT(*) as count 
                 FROM student_fees 
@@ -218,13 +232,23 @@ class FeePayment:
             """
             pattern = f"REC-{date_str}-%"
             result = db.execute_query(query, (pattern,), fetch=True)
-            
-            if result:
-                next_num = result[0]['count'] + 1
+
+            if result and 'count' in result[0]:
+                next_num = int(result[0]['count']) + 1
             else:
                 next_num = 1
-            
-            return f"REC-{date_str}-{next_num:04d}"
+
+            # Build candidate and ensure it does not already exist
+            while True:
+                candidate = f"REC-{date_str}-{next_num:04d}"
+                exists = db.execute_query(
+                    "SELECT 1 FROM student_fees WHERE receipt_number = %s LIMIT 1",
+                    (candidate,),
+                    fetch=True
+                )
+                if not exists:
+                    return candidate
+                next_num += 1
         except:
             # Fallback
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -302,6 +326,29 @@ class FeePayment:
             }
         except:
             return {'total_amount': 0, 'payment_count': 0, 'monthly_breakdown': []}
+
+    @classmethod
+    def get_collected_by_fee_type(cls, start_date: date = None, end_date: date = None) -> List[Dict[str, Any]]:
+        """Get total collected grouped by fee type for a period"""
+        try:
+            if not start_date:
+                start_date = date(date.today().year, 1, 1)
+            if not end_date:
+                end_date = date.today()
+
+            query = """
+                SELECT ft.fee_type_id, ft.fee_name, COALESCE(SUM(sf.amount_paid), 0) AS total_collected,
+                       COUNT(sf.fee_id) AS payment_count
+                FROM fee_types ft
+                LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.payment_date BETWEEN %s AND %s
+                WHERE ft.academic_year = %s
+                GROUP BY ft.fee_type_id, ft.fee_name
+                ORDER BY total_collected DESC
+            """
+            results = db.execute_query(query, (start_date, end_date, config.Config.CURRENT_ACADEMIC_YEAR), fetch=True)
+            return results
+        except:
+            return []
 
 
 @dataclass
@@ -548,6 +595,29 @@ class FinancialManager:
                 ORDER BY balance DESC, s.class, s.last_name
             """
             return db.execute_query(query, (academic_year,), fetch=True)
+        except:
+            return []
+
+    @staticmethod
+    def get_collected_by_fee_type(start_date: date = None, end_date: date = None) -> List[Dict[str, Any]]:
+        """Return totals collected grouped by fee type for a period (wrapper for UI)."""
+        try:
+            if not start_date:
+                start_date = date(date.today().year, 1, 1)
+            if not end_date:
+                end_date = date.today()
+
+            query = """
+                SELECT ft.fee_type_id, ft.fee_name, COALESCE(SUM(sf.amount_paid), 0) AS total_collected,
+                       COUNT(sf.fee_id) AS payment_count
+                FROM fee_types ft
+                LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.payment_date BETWEEN %s AND %s
+                WHERE ft.academic_year = %s
+                GROUP BY ft.fee_type_id, ft.fee_name
+                ORDER BY total_collected DESC
+            """
+            results = db.execute_query(query, (start_date, end_date, config.Config.CURRENT_ACADEMIC_YEAR), fetch=True)
+            return results
         except:
             return []
     

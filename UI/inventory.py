@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 from datetime import datetime, date
 import config
 from database.connection import db
+from utils.helpers import format_currency, parse_currency
 
 class InventoryTab:
     def __init__(self, parent):
@@ -107,8 +108,9 @@ class InventoryTab:
         self.total_items_var = tk.StringVar(value="0")
         ttk.Label(summary_frame, textvariable=self.total_items_var, font=('Arial', 10, 'bold')).pack(side='left', padx=5)
         
+        from utils.helpers import format_currency
         ttk.Label(summary_frame, text="Total Value:").pack(side='left', padx=20)
-        self.total_value_var = tk.StringVar(value="$0.00")
+        self.total_value_var = tk.StringVar(value=format_currency(0.0))
         ttk.Label(summary_frame, textvariable=self.total_value_var, font=('Arial', 10, 'bold')).pack(side='left', padx=5)
     
     def setup_low_stock_tab(self):
@@ -148,8 +150,9 @@ class InventoryTab:
         self.low_stock_count_var = tk.StringVar(value="0")
         ttk.Label(action_frame, textvariable=self.low_stock_count_var, font=('Arial', 10, 'bold')).pack(side='left', padx=5)
         
+        from utils.helpers import format_currency
         ttk.Label(action_frame, text="Total Reorder Cost:").pack(side='left', padx=20)
-        self.reorder_cost_var = tk.StringVar(value="$0.00")
+        self.reorder_cost_var = tk.StringVar(value=format_currency(0.0))
         ttk.Label(action_frame, textvariable=self.reorder_cost_var, font=('Arial', 10, 'bold')).pack(side='left', padx=5)
         
         # Actions
@@ -259,25 +262,30 @@ class InventoryTab:
             total_items = 0
             total_value = 0
             
+            from utils.helpers import format_currency
             for row in results:
+                unit_price_display = format_currency(float(row['unit_price'])) if row['unit_price'] else format_currency(0.0)
+                total_value_display = format_currency(float(row['total_value'])) if row['total_value'] else format_currency(0.0)
+
                 self.inventory_tree.insert('', 'end', values=(
                     row['item_id'],
                     row['item_code'],
                     row['item_name'],
                     row['category'],
                     row['quantity'],
-                    f"${row['unit_price']:,.2f}" if row['unit_price'] else "$0.00",
-                    f"${row['total_value']:,.2f}" if row['total_value'] else "$0.00",
+                    unit_price_display,
+                    total_value_display,
                     row['min_quantity'],
                     row['last_restocked'] or "Never"
                 ))
-                
+
                 total_items += 1
                 total_value += float(row['total_value']) if row['total_value'] else 0
             
             # Update summary
             self.total_items_var.set(str(total_items))
-            self.total_value_var.set(f"${total_value:,.2f}")
+            from utils.helpers import format_currency
+            self.total_value_var.set(format_currency(total_value))
             
             # Load other tabs
             self.load_low_stock()
@@ -338,8 +346,8 @@ class InventoryTab:
                     row['item_name'],
                     row['category'],
                     row['quantity'],
-                    f"${row['unit_price']:,.2f}" if row['unit_price'] else "$0.00",
-                    f"${row['total_value']:,.2f}" if row['total_value'] else "$0.00",
+                    format_currency(float(row['unit_price'])) if row['unit_price'] else format_currency(0.0),
+                    format_currency(float(row['total_value'])) if row['total_value'] else format_currency(0.0),
                     row['min_quantity'],
                     row['last_restocked'] or "Never"
                 ))
@@ -349,7 +357,7 @@ class InventoryTab:
             
             # Update summary
             self.total_items_var.set(str(total_items))
-            self.total_value_var.set(f"${total_value:,.2f}")
+            self.total_value_var.set(format_currency(total_value))
             
         except Exception as e:
             print(f"Error searching inventory: {e}")
@@ -388,8 +396,8 @@ class InventoryTab:
                     current_qty,
                     min_qty,
                     reorder_qty,
-                    f"${unit_price:,.2f}",
-                    f"${reorder_cost:,.2f}"
+                    format_currency(unit_price),
+                    format_currency(reorder_cost)
                 ))
                 
                 low_stock_count += 1
@@ -397,7 +405,7 @@ class InventoryTab:
             
             # Update summary
             self.low_stock_count_var.set(str(low_stock_count))
-            self.reorder_cost_var.set(f"${total_reorder_cost:,.2f}")
+            self.reorder_cost_var.set(format_currency(total_reorder_cost))
             
         except Exception as e:
             print(f"Error loading low stock: {e}")
@@ -423,16 +431,16 @@ class InventoryTab:
             
             for row in results:
                 item_count = row['item_count']
-                total_qty = row['total_quantity'] or 0
+                total_qty = float(row['total_quantity']) if row['total_quantity'] else 0
                 total_val = float(row['total_value']) if row['total_value'] else 0
-                avg_price = total_val / total_qty if total_qty > 0 else 0
+                avg_price = (total_val / total_qty) if total_qty > 0 else 0
                 
                 self.categories_tree.insert('', 'end', values=(
                     row['category'],
                     item_count,
                     total_qty,
-                    f"${total_val:,.2f}",
-                    f"${avg_price:,.2f}"
+                    format_currency(total_val),
+                    format_currency(avg_price)
                 ))
                 
         except Exception as e:
@@ -755,13 +763,14 @@ class InventoryTab:
                 'name': values[1],
                 'category': values[2],
                 'reorder_qty': int(values[5]),
-                'unit_price': float(values[6].replace('$', '').replace(',', '')),
-                'total_cost': float(values[7].replace('$', '').replace(',', ''))
+                'unit_price': parse_currency(values[6]),
+                'total_cost': parse_currency(values[7])
             })
         
         # Generate order list (could be PDF or Excel)
+        total_cost = sum(item['total_cost'] for item in order_items)
         messagebox.showinfo("Order List", 
-                          f"Generated order list for {len(order_items)} items\nTotal cost: ${sum(item['total_cost'] for item in order_items):,.2f}")
+                  f"Generated order list for {len(order_items)} items\nTotal cost: {format_currency(total_cost)}")
     
     def restock_all(self):
         """Restock all low stock items to minimum"""

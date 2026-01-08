@@ -15,6 +15,7 @@ CREATE TABLE students (
     birth_date DATE,
     parent_name VARCHAR(100),
     parent_phone VARCHAR(20),
+    parent_email VARCHAR(100),
     address TEXT,
     enrollment_date DATE NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
@@ -173,33 +174,6 @@ CREATE TABLE student_classes (
     INDEX idx_student_id (student_id),
     INDEX idx_class_id (class_id)
 );
-
--- Insert Default Fee Types
-INSERT INTO fee_types (fee_name, description, amount, term, academic_year, is_required) VALUES
-('Tuition Fee', 'Main tuition fee for the term', 500000.00, 'Term 1', '2024', 1),
-('Stationary Fee', 'Books, pens, and other stationary', 50000.00, 'Term 1', '2024', 1),
-('Registration Fee', 'Annual registration fee', 100000.00, 'Annual', '2024', 1),
-('Uniform Fee', 'School uniform and PE kit', 150000.00, 'Annual', '2024', 1),
-('Sports Fee', 'Sports activities and equipment', 20000.00, 'Term 1', '2024', 1),
-('Library Fee', 'Library maintenance and books', 10000.00, 'Term 1', '2024', 0),
-('Exam Fee', 'Examination materials and supervision', 15000.00, 'Term 1', '2024', 1);
-
--- Insert Sample Classes
-INSERT INTO classes (class_name, room_number, academic_year) VALUES
-('Grade 1A', 'Room 101', '2024'),
-('Grade 1B', 'Room 102', '2024'),
-('Grade 2A', 'Room 103', '2024'),
-('Grade 2B', 'Room 104', '2024'),
-('Grade 3A', 'Room 105', '2024'),
-('Grade 3B', 'Room 106', '2024'),
-('Grade 4A', 'Room 201', '2024'),
-('Grade 4B', 'Room 202', '2024'),
-('Grade 5A', 'Room 203', '2024'),
-('Grade 5B', 'Room 204', '2024'),
-('Grade 6A', 'Room 205', '2024'),
-('Grade 6B', 'Room 206', '2024'),
-('Grade 7A', 'Room 301', '2024'),
-('Grade 7B', 'Room 302', '2024');
 
 -- Create Views for Common Queries
 
@@ -383,67 +357,35 @@ END;
 
 -- Insert Sample Data (Optional - remove in production)
 INSERT INTO students (student_code, first_name, last_name, class, birth_date, parent_name, parent_phone, address, enrollment_date) VALUES
-('STU1001', 'John', 'Smith', 'Grade 1A', '2018-03-15', 'Mary Smith', '+255712345678', '123 Main St, Dar es Salaam', '2024-01-10'),
-('STU1002', 'Sarah', 'Johnson', 'Grade 1A', '2018-05-20', 'Robert Johnson', '+255713456789', '456 Oak Ave, Dar es Salaam', '2024-01-10'),
-('STU1003', 'Michael', 'Williams', 'Grade 2B', '2017-08-12', 'James Williams', '+255714567890', '789 Pine Rd, Dar es Salaam', '2024-01-10'),
-('STU1004', 'Emily', 'Brown', 'Grade 3A', '2016-11-30', 'Patricia Brown', '+255715678901', '321 Elm St, Dar es Salaam', '2024-01-10'),
-('STU1005', 'David', 'Jones', 'Grade 4B', '2015-02-14', 'Jennifer Jones', '+255716789012', '654 Maple Dr, Dar es Salaam', '2024-01-10');
 
 INSERT INTO teachers (teacher_code, first_name, last_name, phone, email, subject_specialization, hire_date) VALUES
-('TCH101', 'Anna', 'Wilson', '+255721234567', 'anna.wilson@school.edu', 'Mathematics', '2020-01-15'),
-('TCH102', 'Thomas', 'Davis', '+255722345678', 'thomas.davis@school.edu', 'English', '2019-03-10'),
-('TCH103', 'Lisa', 'Miller', '+255723456789', 'lisa.miller@school.edu', 'Science', '2021-08-20'),
-('TCH104', 'Robert', 'Taylor', '+255724567890', 'robert.taylor@school.edu', 'Social Studies', '2018-06-05');
+
 
 INSERT INTO inventory_items (item_code, item_name, category, quantity, unit_price, min_quantity, supplier) VALUES
-('ITEM001', 'Exercise Books (80pg)', 'Stationary', 150, 1500.00, 50, 'ABC Supplies'),
-('ITEM002', 'Blue Pens', 'Stationary', 200, 500.00, 100, 'ABC Supplies'),
-('ITEM003', 'Red Pens', 'Stationary', 180, 500.00, 100, 'ABC Supplies'),
-('ITEM004', 'Pencils', 'Stationary', 300, 300.00, 150, 'ABC Supplies'),
-('ITEM005', 'Chalk (Box)', 'Teaching Aids', 25, 2000.00, 10, 'XYZ Educational'),
-('ITEM006', 'Whiteboard Markers', 'Teaching Aids', 50, 1200.00, 20, 'XYZ Educational'),
-('ITEM007', 'Stapler', 'Office Supplies', 10, 4500.00, 5, 'Office Depot'),
-('ITEM008', 'Staples (Box)', 'Office Supplies', 15, 1500.00, 10, 'Office Depot');
+
 
 INSERT INTO student_fees (student_id, fee_type_id, amount_paid, payment_date, payment_method, receipt_number) VALUES
-(1, 1, 200000.00, '2024-01-15', 'Cash', 'REC001'),
-(1, 2, 50000.00, '2024-01-15', 'Cash', 'REC002'),
-(2, 1, 250000.00, '2024-01-16', 'M-Pesa', 'REC003'),
-(3, 1, 150000.00, '2024-01-17', 'Bank Transfer', 'REC004'),
-(4, 1, 500000.00, '2024-01-18', 'Cash', 'REC005'),
-(5, 1, 300000.00, '2024-01-19', 'Cash', 'REC006');
+
 
 INSERT INTO expenses (expense_date, description, amount, category, payment_method, receipt_number) VALUES
-('2024-01-05', 'Purchase of textbooks', 250000.00, 'Educational Materials', 'Bank Transfer', 'EXP001'),
-('2024-01-10', 'Office supplies', 75000.00, 'Office Supplies', 'Cash', 'EXP002'),
-('2024-01-12', 'Sports equipment', 120000.00, 'Sports', 'M-Pesa', 'EXP003'),
-('2024-01-15', 'Utility bills', 85000.00, 'Utilities', 'Bank Transfer', 'EXP004'),
-('2024-01-20', 'Maintenance repairs', 45000.00, 'Maintenance', 'Cash', 'EXP005');
 
 INSERT INTO attendance (student_id, attendance_date, status, remarks) VALUES
-(1, '2024-01-15', 'Present', NULL),
-(2, '2024-01-15', 'Present', NULL),
-(3, '2024-01-15', 'Late', 'Arrived at 8:30 AM'),
-(4, '2024-01-15', 'Present', NULL),
-(5, '2024-01-15', 'Absent', 'Sick leave'),
-(1, '2024-01-16', 'Present', NULL),
-(2, '2024-01-16', 'Present', NULL),
-(3, '2024-01-16', 'Present', NULL),
-(4, '2024-01-16', 'Excused', 'Family event'),
-(5, '2024-01-16', 'Present', NULL);
 
 -- Update classes with teachers
-UPDATE classes SET teacher_id = 1 WHERE class_name = 'Grade 1A';
-UPDATE classes SET teacher_id = 2 WHERE class_name = 'Grade 2A';
-UPDATE classes SET teacher_id = 3 WHERE class_name = 'Grade 3A';
-UPDATE classes SET teacher_id = 4 WHERE class_name = 'Grade 4A';
+UPDATE classes SET teacher_id = 1 WHERE class_name = 'Grade 1';
+UPDATE classes SET teacher_id = 2 WHERE class_name = 'Grade 2';
+UPDATE classes SET teacher_id = 3 WHERE class_name = 'Grade 3';
+UPDATE classes SET teacher_id = 4 WHERE class_name = 'Grade 4';
 
 -- Assign students to classes
 INSERT INTO student_classes (student_id, class_id, academic_year) VALUES
-(1, 1, '2024'),
-(2, 1, '2024'),
-(3, 4, '2024'),
-(4, 5, '2024'),
-(5, 8, '2024');
+(1, 1, '2026'),
+(2, 1, '2026'),
+(3, 4, '2026'),
+(4, 5, '2026'),
+(5, 8, '2026');
 
+-- Sample data removed for a clean production-like schema. To re-add
+-- the sample data, run a separate provisioning script or execute the
+-- original INSERT statements from a safe, reviewed file.
 COMMIT;

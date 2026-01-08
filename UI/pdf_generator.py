@@ -11,6 +11,7 @@ from datetime import datetime, date
 import os
 import config
 from database.connection import db
+from utils.helpers import format_currency, parse_currency
 
 def create_header_footer(canvas, doc):
     """Create header and footer for PDF pages"""
@@ -190,7 +191,7 @@ def generate_student_fees_report(start_date=None, end_date=None, class_filter=No
             row['student_name'],
             row['class'],
             row['fee_name'],
-            f"${row['amount_paid']:,.2f}",
+            format_currency(float(row['amount_paid'])),
             row['payment_method'],
             row['receipt_number'] or ''
         ])
@@ -226,7 +227,7 @@ def generate_student_fees_report(start_date=None, end_date=None, class_filter=No
     elements.append(Paragraph(title, styles['Heading1']))
     
     # Summary
-    summary = f"Total Records: {len(results)} | Total Amount: ${total_amount:,.2f}"
+    summary = f"Total Records: {len(results)} | Total Amount: {format_currency(total_amount)}"
     if start_date:
         summary += f" | From: {start_date}"
     if end_date:
@@ -374,12 +375,12 @@ def generate_fee_collection_report(start_date=None, end_date=None, output_file=N
         data.append([
             row['month'],
             str(row['payment_count']),
-            f"${float(row['total_amount']):,.2f}"
+            format_currency(float(row['total_amount']))
         ])
         grand_total += float(row['total_amount'])
     
     # Add total row
-    data.append(['GRAND TOTAL', '', f"${grand_total:,.2f}"])
+    data.append(['GRAND TOTAL', '', format_currency(grand_total)])
     
     # Create table
     table = Table(data)
@@ -450,12 +451,12 @@ def generate_expense_report(start_date=None, end_date=None, output_file=None):
         data.append([
             row['category'] or 'Uncategorized',
             str(row['expense_count']),
-            f"${float(row['total_amount']):,.2f}"
+            format_currency(float(row['total_amount']))
         ])
         grand_total += float(row['total_amount'])
-    
+
     # Add total row
-    data.append(['TOTAL', '', f"${grand_total:,.2f}"])
+    data.append(['TOTAL', '', format_currency(grand_total)])
     
     # Create table
     table = Table(data)
@@ -518,10 +519,10 @@ def generate_financial_summary_report(start_date=None, end_date=None, output_fil
     # Summary table
     summary_data = [
         ['Category', 'Amount'],
-        ['Total Fees Collected', f"${summary['revenue']['total_fees']:,.2f}"],
-        ['Total Expenses', f"${summary['expenses']['total_expenses']:,.2f}"],
-        ['Net Balance', f"${summary['net_balance']:,.2f}"],
-        ['Outstanding Fees', f"${summary['outstanding_fees']:,.2f}"]
+        ['Total Fees Collected', format_currency(summary['revenue']['total_fees'])],
+        ['Total Expenses', format_currency(summary['expenses']['total_expenses'])],
+        ['Net Balance', format_currency(summary['net_balance'])],
+        ['Outstanding Fees', format_currency(summary['outstanding_fees'])]
     ]
     
     summary_table = Table(summary_data, colWidths=[200, 150])

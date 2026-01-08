@@ -13,6 +13,19 @@ class Validators:
     def validate_phone(phone: str) -> bool:
         if not phone:
             return True
-        # Remove spaces and common punctuation
-        cleaned = re.sub(r'[\s\-\(\)+]', '', phone)
-        return cleaned.isdigit() and 7 <= len(cleaned) <= 15
+        # Accept numbers with optional + and country code
+        phone = phone.strip()
+        # Allow +265 prefix specifically
+        if phone.startswith('+'):
+            # remove spaces and dashes but keep leading +
+            cleaned = '+' + re.sub(r'[\s\-\(\)]', '', phone[1:])
+            if cleaned.startswith('+265'):
+                digits = re.sub(r'\D', '', cleaned[4:])
+                return digits.isdigit() and 6 <= len(digits) <= 10
+            else:
+                # allow other international formats
+                digits = re.sub(r'\D', '', cleaned[1:])
+                return digits.isdigit() and 7 <= len(digits) <= 15
+        else:
+            cleaned = re.sub(r'[\s\-\(\)+]', '', phone)
+            return cleaned.isdigit() and 6 <= len(cleaned) <= 15

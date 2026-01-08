@@ -1,0 +1,60 @@
+# Build artifacts
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Installer
+installer/
+package/
+portable/
+releases/
+
+# Database
+*.db
+*.sqlite
+*.db-journal
+
+# Logs
+*.log
+logs/
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+*.egg-info/
+pip-wheel-metadata/
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+
+# Temporary files
+*.tmp
+*.temp
+.temp/
+
+# Config files (except template)
+config.py
+!config.py.example
+
+# Executables
+*.exe
+*.msi

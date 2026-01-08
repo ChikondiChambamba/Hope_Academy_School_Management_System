@@ -9,6 +9,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 import config
 from database.connection import db
+from utils.helpers import format_currency, parse_currency
 
 def generate_inventory_list_report(filename, category_filter="All"):
     """Generate inventory list report"""
@@ -82,7 +83,7 @@ def generate_inventory_list_report(filename, category_filter="All"):
     summary_data = [
         ['Total Items:', total_items],
         ['Total Quantity:', total_quantity],
-        ['Total Value:', f"${total_value:,.2f}"],
+        ['Total Value:', format_currency(total_value)],
         ['Category Filter:', category_filter]
     ]
     
@@ -127,8 +128,8 @@ def generate_inventory_list_report(filename, category_filter="All"):
                     row['item_code'],
                     row['item_name'],
                     row['quantity'],
-                    f"${row['unit_price']:,.2f}" if row['unit_price'] else '',
-                    f"${float(row['total_value']):,.2f}" if row['total_value'] else '',
+                    format_currency(float(row['unit_price'])) if row['unit_price'] else '',
+                    format_currency(float(row['total_value'])) if row['total_value'] else '',
                     row['min_quantity'],
                     row['max_quantity'],
                     row['location'] or ''
@@ -225,7 +226,7 @@ def generate_low_stock_report(filename):
     summary_data = [
         ['Low Stock Items:', total_items],
         ['Total Reorder Quantity:', total_reorder_qty],
-        ['Estimated Reorder Cost:', f"${total_reorder_cost:,.2f}"],
+            ['Estimated Reorder Cost:', format_currency(total_reorder_cost)],
         ['Report Date:', date.today().strftime('%Y-%m-%d')]
     ]
     
@@ -262,8 +263,8 @@ def generate_low_stock_report(filename):
                 row['quantity'],
                 row['min_quantity'],
                 reorder_qty,
-                f"${unit_price:,.2f}" if unit_price else '',
-                f"${reorder_cost:,.2f}" if reorder_cost else '',
+                format_currency(unit_price) if unit_price else '',
+                format_currency(reorder_cost) if reorder_cost else '',
                 row['supplier'] or ''
             ])
         
@@ -370,7 +371,7 @@ def generate_inventory_valuation_report(filename):
         ['Total Categories:', total_categories],
         ['Total Items:', total_items],
         ['Total Quantity:', total_quantity],
-        ['Total Inventory Value:', f"${total_value:,.2f}"]
+        ['Total Inventory Value:', format_currency(total_value)]
     ]
     
     overall_table = Table(overall_data, colWidths=[2*inch, 2*inch])
@@ -401,7 +402,7 @@ def generate_inventory_valuation_report(filename):
                 row['category'] or 'Uncategorized',
                 row['item_count'],
                 row['total_quantity'],
-                f"${category_value:,.2f}",
+                format_currency(category_value),
                 f"{percentage:.1f}%"
             ])
         
@@ -445,7 +446,7 @@ def generate_inventory_valuation_report(filename):
             analysis_text = f"Top 3 categories by value:\n"
             for i, cat in enumerate(top_categories, 1):
                 percentage = (float(cat['total_value']) / total_value * 100) if total_value > 0 else 0
-                analysis_text += f"{i}. {cat['category']}: ${float(cat['total_value']):,.2f} ({percentage:.1f}%)\n"
+                analysis_text += f"{i}. {cat['category']}: {format_currency(float(cat['total_value']))} ({percentage:.1f}%)\n"
             
             story.append(Paragraph(analysis_text, styles['Normal']))
         

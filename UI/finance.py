@@ -1,8 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, date
+import re
 import config
 from database.connection import db
+from utils.helpers import format_currency, parse_currency
 
 class FinanceTab:
     def __init__(self, parent):
@@ -27,12 +29,16 @@ class FinanceTab:
         self.notebook.add(self.student_balances_frame, text="Student Balances")
         self.notebook.add(self.expenses_frame, text="Expenses")
         self.notebook.add(self.financial_summary_frame, text="Financial Summary")
+        # Management tab for fee types and expense categories
+        self.manage_types_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.manage_types_frame, text="Manage Types")
         
         # Setup each tab
         self.setup_fee_payments_tab()
         self.setup_student_balances_tab()
         self.setup_expenses_tab()
         self.setup_financial_summary_tab()
+        self.setup_manage_types_tab()
     
     def setup_fee_payments_tab(self):
         """Setup fee payments tab"""
@@ -47,7 +53,8 @@ class FinanceTab:
         # Student selection
         ttk.Label(form_frame, text="Student:").grid(row=0, column=0, sticky='w', pady=5)
         self.student_var = tk.StringVar()
-        self.student_combo = ttk.Combobox(form_frame, textvariable=self.student_var, state='readonly')
+        # Allow manual entry (typing) while keeping dropdown choices
+        self.student_combo = ttk.Combobox(form_frame, textvariable=self.student_var, state='normal')
         self.student_combo.grid(row=0, column=1, pady=5, padx=5, sticky='ew')
         
         # Fee type selection
@@ -55,6 +62,8 @@ class FinanceTab:
         self.fee_type_var = tk.StringVar()
         self.fee_type_combo = ttk.Combobox(form_frame, textvariable=self.fee_type_var, state='readonly')
         self.fee_type_combo.grid(row=1, column=1, pady=5, padx=5, sticky='ew')
+        # When a fee type is selected, possibly autofill/enforce tuition amounts
+        self.fee_type_combo.bind('<<ComboboxSelected>>', self.on_fee_type_selected)
         
         # Amount
         ttk.Label(form_frame, text="Amount:").grid(row=2, column=0, sticky='w', pady=5)
@@ -126,10 +135,12 @@ class FinanceTab:
         summary_frame.pack(fill='x', pady=(10, 0))
         
         ttk.Label(summary_frame, text="Today's Total:").pack(side='left', padx=5)
-        self.today_total_var = tk.StringVar(value="$0.00")
+        from utils.helpers import format_currency
+        self.today_total_var = tk.StringVar(value=format_currency(0.0))
         ttk.Label(summary_frame, textvariable=self.today_total_var, font=('Arial', 12, 'bold')).pack(side='left', padx=5)
         
         ttk.Button(summary_frame, text="Refresh", command=self.load_recent_payments).pack(side='right', padx=5)
+        ttk.Button(summary_frame, text="Delete Selected", command=self.delete_payment).pack(side='right', padx=5)
     
     def setup_student_balances_tab(self):
         """Setup student balances tab"""
@@ -201,6 +212,37 @@ class FinanceTab:
         
         # Right-click menu for actions
         self.setup_balance_context_menu()
+
+    def setup_payments_context_menu(self):
+        """Setup context menu for payments tree"""
+        self.payments_menu = tk.Menu(self.frame, tearoff=0)
+        self.payments_menu.add_command(label="Delete Payment", command=self.delete_payment)
+        self.payments_tree.bind("<Button-3>", self.show_payments_context_menu)
+
+    def show_payments_context_menu(self, event):
+        item = self.payments_tree.identify_row(event.y)
+        if item:
+            self.payments_tree.selection_set(item)
+            self.payments_menu.post(event.x_root, event.y_root)
+
+    def delete_payment(self):
+        """Delete selected payment record"""
+        selected = self.payments_tree.selection()
+        if not selected:
+            messagebox.showwarning('Select', 'Select a payment to delete')
+            return
+        item = self.payments_tree.item(selected[0], 'values')
+        fee_id = item[0]
+        if not messagebox.askyesno('Confirm', 'Permanently delete selected payment?'):
+            return
+        try:
+            db.execute_query('DELETE FROM student_fees WHERE fee_id=%s', (fee_id,))
+            messagebox.showinfo('Success', 'Payment deleted')
+            self.load_recent_payments()
+            self.load_student_balances()
+            self.load_financial_summary()
+        except Exception as e:
+            messagebox.showerror('Error', str(e))
     
     def setup_expenses_tab(self):
         """Setup expenses tab"""
@@ -231,7 +273,25 @@ class FinanceTab:
                 ttk.Entry(form_frame, textvariable=getattr(self, var_name), width=25).grid(
                     row=i, column=1, pady=5, padx=5, sticky='w')
             elif "category" in var_name:
-                categories = ['Supplies', 'Salaries', 'Utilities', 'Maintenance', 'Other']
+                # Prefer managed expense categories; fall back to previous heuristics
+                try:
+                    from models.expense_category import ExpenseCategory
+                    ExpenseCategory.ensure_table()
+                    cats = ExpenseCategory.get_all()
+                    categories = [c.name for c in cats]
+                    if not categories:
+                        # Fallback to historical categories from expenses/inventory
+                        query = "SELECT DISTINCT category FROM expenses WHERE category IS NOT NULL"
+                        results = db.execute_query(query, fetch=True)
+                        categories = [r['category'] for r in results if r.get('category')]
+                        q2 = "SELECT DISTINCT category FROM inventory_items WHERE category IS NOT NULL"
+                        res2 = db.execute_query(q2, fetch=True)
+                        for r in res2:
+                            if r.get('category') and r['category'] not in categories:
+                                categories.append(r['category'])
+                except Exception:
+                    categories = ['Supplies', 'Salaries', 'Utilities', 'Maintenance', 'Other']
+
                 ttk.Combobox(form_frame, textvariable=getattr(self, var_name), 
                            values=categories, width=23).grid(row=i, column=1, pady=5, padx=5, sticky='w')
             elif "method" in var_name:
@@ -285,7 +345,7 @@ class FinanceTab:
         summary_frame.pack(fill='x', pady=(10, 0))
         
         ttk.Label(summary_frame, text="Month Total:").pack(side='left', padx=5)
-        self.month_expense_var = tk.StringVar(value="$0.00")
+        self.month_expense_var = tk.StringVar(value=format_currency(0.0))
         ttk.Label(summary_frame, textvariable=self.month_expense_var, font=('Arial', 12, 'bold')).pack(side='left', padx=5)
         
         ttk.Button(summary_frame, text="Refresh", command=self.load_recent_expenses).pack(side='right', padx=5)
@@ -358,6 +418,20 @@ class FinanceTab:
         
         self.category_tree.pack(side='left', fill='both', expand=True)
         scrollbar2.pack(side='right', fill='y')
+
+        # Fee totals (per fee type)
+        fee_totals_frame = ttk.LabelFrame(self.financial_summary_frame, text="Fees Collected by Type", padding=10)
+        fee_totals_frame.pack(fill='both', padx=20, pady=(0, 10))
+
+        self.fee_totals_tree = ttk.Treeview(fee_totals_frame, columns=('Fee Type', 'Total Collected', 'Payments'), show='headings', height=6)
+        for col, w in (('Fee Type', 240), ('Total Collected', 120), ('Payments', 80)):
+            self.fee_totals_tree.heading(col, text=col)
+            self.fee_totals_tree.column(col, width=w)
+
+        fee_totals_scroll = ttk.Scrollbar(fee_totals_frame, orient='vertical', command=self.fee_totals_tree.yview)
+        self.fee_totals_tree.configure(yscrollcommand=fee_totals_scroll.set)
+        self.fee_totals_tree.pack(side='left', fill='both', expand=True)
+        fee_totals_scroll.pack(side='right', fill='y')
         
         # Action buttons
         button_frame = ttk.Frame(self.financial_summary_frame)
@@ -372,6 +446,196 @@ class FinanceTab:
         
         for text, command in actions:
             ttk.Button(button_frame, text=text, command=command).pack(side='left', padx=5)
+
+    def setup_manage_types_tab(self):
+        """Setup UI to manage fee types and expense categories"""
+        from models.finance import FeeType
+        from models.expense_category import ExpenseCategory
+
+        frame = self.manage_types_frame
+        container = ttk.Frame(frame)
+        container.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # Left: Fee Types management
+        left = ttk.LabelFrame(container, text='Fee Types', padding=10)
+        left.pack(side='left', fill='both', expand=True, padx=5, pady=5)
+
+        self.fee_types_tree = ttk.Treeview(left, columns=('ID', 'Name', 'Amount', 'Term', 'Required'), show='headings', height=12)
+        for col in ('ID', 'Name', 'Amount', 'Term', 'Required'):
+            self.fee_types_tree.heading(col, text=col)
+            self.fee_types_tree.column(col, width=100)
+        self.fee_types_tree.pack(fill='both', expand=True)
+
+        ft_btn_frame = ttk.Frame(left)
+        ft_btn_frame.pack(fill='x', pady=5)
+        ttk.Button(ft_btn_frame, text='Add Fee Type', command=self.add_fee_type).pack(side='left', padx=5)
+        ttk.Button(ft_btn_frame, text='Edit Selected', command=self.edit_fee_type).pack(side='left', padx=5)
+        ttk.Button(ft_btn_frame, text='Delete Selected', command=self.delete_fee_type).pack(side='left', padx=5)
+
+        # Right: Expense Categories management
+        right = ttk.LabelFrame(container, text='Expense Categories', padding=10)
+        right.pack(side='right', fill='both', expand=True, padx=5, pady=5)
+
+        self.exp_cat_tree = ttk.Treeview(right, columns=('ID', 'Name', 'Description'), show='headings', height=12)
+        for col in ('ID', 'Name', 'Description'):
+            self.exp_cat_tree.heading(col, text=col)
+            self.exp_cat_tree.column(col, width=120)
+        self.exp_cat_tree.pack(fill='both', expand=True)
+
+        ec_btn_frame = ttk.Frame(right)
+        ec_btn_frame.pack(fill='x', pady=5)
+        ttk.Button(ec_btn_frame, text='Add Category', command=self.add_expense_category).pack(side='left', padx=5)
+        ttk.Button(ec_btn_frame, text='Edit Selected', command=self.edit_expense_category).pack(side='left', padx=5)
+        ttk.Button(ec_btn_frame, text='Delete Selected', command=self.delete_expense_category).pack(side='left', padx=5)
+
+        # Load data
+        self.load_manage_data()
+
+    def load_manage_data(self):
+        """Load fee types and expense categories into management trees"""
+        from models.finance import FeeType
+        from models.expense_category import ExpenseCategory
+
+        # Clear
+        for i in self.fee_types_tree.get_children():
+            self.fee_types_tree.delete(i)
+        for i in self.exp_cat_tree.get_children():
+            self.exp_cat_tree.delete(i)
+
+        # Load fee types
+        try:
+            fee_types = FeeType.get_all(config.Config.CURRENT_ACADEMIC_YEAR)
+            for ft in fee_types:
+                self.fee_types_tree.insert('', 'end', values=(ft.fee_type_id, ft.fee_name, format_currency(ft.amount), ft.term, 'Yes' if ft.is_required else 'No'))
+        except Exception as e:
+            print(f"Error loading fee types for manage tab: {e}")
+
+        # Load expense categories
+        try:
+            ExpenseCategory.ensure_table()
+            cats = ExpenseCategory.get_all()
+            for c in cats:
+                self.exp_cat_tree.insert('', 'end', values=(c.category_id, c.name, c.description))
+        except Exception as e:
+            print(f"Error loading expense categories: {e}")
+
+    # Fee Type CRUD helpers (use DB directly for simplicity)
+    def add_fee_type(self):
+        from UI.dialogs import FeeTypeDialog
+        dialog = FeeTypeDialog(self.frame, title='Add Fee Type')
+        dialog.show()
+        if not dialog.result:
+            return
+        data = dialog.result_data
+        try:
+            query = "INSERT INTO fee_types (fee_name, description, amount, term, academic_year, is_required) VALUES (%s, %s, %s, %s, %s, %s)"
+            db.execute_query(query, (data['fee_name'], '', data['amount'], data['term'], config.Config.CURRENT_ACADEMIC_YEAR, 1 if data['is_required'] else 0))
+            messagebox.showinfo('Success', 'Fee type added')
+            self.load_manage_data()
+        except Exception as e:
+            messagebox.showerror('Error', str(e))
+
+    def edit_fee_type(self):
+        selected = self.fee_types_tree.selection()
+        if not selected:
+            messagebox.showwarning('Select', 'Select a fee type to edit')
+            return
+        item = self.fee_types_tree.item(selected[0], 'values')
+        fid = item[0]
+        from UI.dialogs import FeeTypeDialog
+        # Prepare existing data
+        try:
+            # amount column shown already formatted; attempt to parse
+            amount_str = str(item[2]).replace(config.Config.CURRENCY_SYMBOL, '')
+            existing = {'fee_name': item[1], 'amount': float(amount_str) if amount_str else 0.0, 'term': item[3], 'is_required': (item[4] == 'Yes')}
+        except Exception:
+            existing = {'fee_name': item[1], 'amount': 0.0, 'term': item[3], 'is_required': (item[4] == 'Yes')}
+
+        dialog = FeeTypeDialog(self.frame, title='Edit Fee Type', fee_type=existing)
+        dialog.show()
+        if not dialog.result:
+            return
+        data = dialog.result_data
+        try:
+            query = "UPDATE fee_types SET fee_name=%s, amount=%s, term=%s WHERE fee_type_id=%s"
+            db.execute_query(query, (data['fee_name'], data['amount'], data['term'], fid))
+            messagebox.showinfo('Success', 'Fee type updated')
+            self.load_manage_data()
+        except Exception as e:
+            messagebox.showerror('Error', str(e))
+
+    def delete_fee_type(self):
+        selected = self.fee_types_tree.selection()
+        if not selected:
+            messagebox.showwarning('Select', 'Select a fee type to delete')
+            return
+        item = self.fee_types_tree.item(selected[0], 'values')
+        fid = item[0]
+        if not messagebox.askyesno('Confirm', 'Delete selected fee type?'):
+            return
+        try:
+            db.execute_query('DELETE FROM fee_types WHERE fee_type_id=%s', (fid,))
+            messagebox.showinfo('Success', 'Fee type deleted')
+            self.load_manage_data()
+        except Exception as e:
+            messagebox.showerror('Error', str(e))
+
+    # Expense category CRUD
+    def add_expense_category(self):
+        from UI.dialogs import ExpenseCategoryDialog
+        dialog = ExpenseCategoryDialog(self.frame, title='Add Category')
+        dialog.show()
+        if not dialog.result:
+            return
+        data = dialog.result_data
+        from models.expense_category import ExpenseCategory
+        ec = ExpenseCategory(name=data['name'], description=data['description'])
+        ok, msg = ec.save()
+        if ok:
+            messagebox.showinfo('Success', msg)
+            self.load_manage_data()
+        else:
+            messagebox.showerror('Error', msg)
+
+    def edit_expense_category(self):
+        sel = self.exp_cat_tree.selection()
+        if not sel:
+            messagebox.showwarning('Select', 'Select a category to edit')
+            return
+        vals = self.exp_cat_tree.item(sel[0], 'values')
+        cid = vals[0]
+        from UI.dialogs import ExpenseCategoryDialog
+        dialog = ExpenseCategoryDialog(self.frame, title='Edit Category', category={'name': vals[1], 'description': vals[2]})
+        dialog.show()
+        if not dialog.result:
+            return
+        data = dialog.result_data
+        from models.expense_category import ExpenseCategory
+        ec = ExpenseCategory(category_id=cid, name=data['name'], description=data['description'])
+        ok, msg = ec.save()
+        if ok:
+            messagebox.showinfo('Success', msg)
+            self.load_manage_data()
+        else:
+            messagebox.showerror('Error', msg)
+
+    def delete_expense_category(self):
+        sel = self.exp_cat_tree.selection()
+        if not sel:
+            messagebox.showwarning('Select', 'Select a category to delete')
+            return
+        vals = self.exp_cat_tree.item(sel[0], 'values')
+        cid = vals[0]
+        if not messagebox.askyesno('Confirm', 'Delete selected category?'):
+            return
+        from models.expense_category import ExpenseCategory
+        ec = ExpenseCategory(category_id=cid)
+        ok, msg = ec.delete()
+        if ok:
+            messagebox.showinfo('Success', msg)
+            self.load_manage_data()
+        else:
+            messagebox.showerror('Error', msg)
     
     def create_summary_card(self, parent, title, var_name, color):
         """Create a summary card"""
@@ -381,7 +645,7 @@ class FinanceTab:
         ttk.Label(card, text=title, font=('Arial', 10)).pack(pady=(10, 5))
         
         # Value
-        setattr(self, var_name, tk.StringVar(value="$0.00"))
+        setattr(self, var_name, tk.StringVar(value=format_currency(0.0)))
         value_label = ttk.Label(
             card,
             textvariable=getattr(self, var_name),
@@ -438,14 +702,69 @@ class FinanceTab:
             query = """
                 SELECT fee_type_id, fee_name, amount 
                 FROM fee_types 
-                WHERE academic_year = '2024' 
+                WHERE academic_year = %s
                 ORDER BY fee_name
             """
-            results = db.execute_query(query, fetch=True)
-            fee_list = [f"{r['fee_type_id']}: {r['fee_name']} (${r['amount']:,.2f})" for r in results]
+            results = db.execute_query(query, (config.Config.CURRENT_ACADEMIC_YEAR,), fetch=True)
+            fee_list = [f"{r['fee_type_id']}: {r['fee_name']} ({format_currency(r['amount'])})" for r in results]
             self.fee_type_combo['values'] = fee_list
         except Exception as e:
             print(f"Error loading fee types: {e}")
+
+    def on_fee_type_selected(self, event=None):
+        """Auto-fill and enforce tuition amounts based on student class when tuition fee selected."""
+        try:
+            sel = self.fee_type_var.get()
+            if not sel:
+                return
+            fee_type_id = int(sel.split(':')[0])
+            q = "SELECT fee_name, amount FROM fee_types WHERE fee_type_id=%s"
+            res = db.execute_query(q, (fee_type_id,), fetch=True)
+            if not res:
+                return
+            fee_name = res[0].get('fee_name', '') or ''
+            db_amount = res[0].get('amount', 0) or 0
+
+            # Default behavior: set amount to stored fee amount
+            expected = float(db_amount)
+
+            # If fee is tuition, enforce based on class
+            if 'tuition' in fee_name.lower():
+                student_sel = self.student_var.get() or ''
+                # student_sel format: "<id>: First Last (Class)"
+                class_part = ''
+                m = re.search(r"\(([^)]+)\)", student_sel)
+                if m:
+                    class_part = m.group(1).strip()
+                else:
+                    # try take trailing token
+                    parts = student_sel.split('(')
+                    if len(parts) > 1:
+                        class_part = parts[-1].strip(') ')
+
+                # Determine expected tuition
+                if class_part and 'nursery' in class_part.lower():
+                    expected = 45000.0
+                else:
+                    # try to find numeric grade
+                    num_match = re.search(r"(\d+)", class_part)
+                    if num_match:
+                        try:
+                            grade = int(num_match.group(1))
+                            if 1 <= grade <= 7:
+                                expected = 85000.0
+                        except ValueError:
+                            pass
+
+            # Set amount and lock if tuition
+            self.amount_var.set(str(int(expected) if expected.is_integer() else str(expected)))
+            if 'tuition' in (fee_name or '').lower():
+                self.amount_entry.config(state='readonly')
+            else:
+                self.amount_entry.config(state='normal')
+
+        except Exception as e:
+            print(f"Error handling fee type selection: {e}")
     
     def load_classes_for_filter(self):
         """Load classes for filter combobox"""
@@ -468,11 +787,11 @@ class FinanceTab:
             query = """
                 SELECT COALESCE(SUM(amount_paid), 0) as total 
                 FROM student_fees 
-                WHERE payment_date = CURDATE()
+                WHERE DATE(payment_date) = CURDATE()
             """
             result = db.execute_query(query, fetch=True)
             if result:
-                self.today_total_var.set(f"${result[0]['total']:,.2f}")
+                self.today_total_var.set(format_currency(float(result[0]['total'])))
             
             # Get recent payments
             query = """
@@ -498,7 +817,7 @@ class FinanceTab:
                     row['payment_date'],
                     row['student_name'],
                     row['fee_name'],
-                    f"${row['amount_paid']:,.2f}",
+                    format_currency(float(row['amount_paid'])),
                     row['payment_method'],
                     row['receipt_number'] or ''
                 ))
@@ -514,18 +833,32 @@ class FinanceTab:
             self.balances_tree.delete(item)
         
         try:
-            query = """
+            # Compute total fees per student replacing tuition amounts depending on class
+            acad_year = config.Config.CURRENT_ACADEMIC_YEAR
+            query = f"""
                 SELECT 
                     s.student_id,
                     CONCAT(s.first_name, ' ', s.last_name) as student_name,
                     s.class,
-                    COALESCE(SUM(ft.amount), 0) as total_fees,
+                    COALESCE(SUM(
+                        CASE
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                            ELSE ft.amount
+                        END
+                    ), 0) as total_fees,
                     COALESCE(SUM(sf.amount_paid), 0) as amount_paid,
-                    COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
+                    COALESCE(SUM(
+                        CASE
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                            ELSE ft.amount
+                        END
+                    ), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
                 FROM students s
                 CROSS JOIN fee_types ft
                 LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-                WHERE s.is_active = 1 AND ft.academic_year = '2024'
+                WHERE s.is_active = 1 AND ft.academic_year = '{acad_year}'
                 GROUP BY s.student_id, s.first_name, s.last_name, s.class
                 ORDER BY s.class, s.last_name, s.first_name
             """
@@ -549,14 +882,14 @@ class FinanceTab:
                     row['student_id'],
                     row['student_name'],
                     row['class'],
-                    f"${float(row['total_fees']):,.2f}",
-                    f"${float(row['amount_paid']):,.2f}",
-                    f"${balance:,.2f}",
+                    format_currency(float(row['total_fees'])),
+                    format_currency(float(row['amount_paid'])),
+                    format_currency(balance),
                     status
                 ))
             
             # Update summary
-            self.total_outstanding_var.set(f"${total_outstanding:,.2f}")
+            self.total_outstanding_var.set(format_currency(total_outstanding))
             self.with_balance_var.set(str(with_balance))
             self.fully_paid_var.set(str(fully_paid))
             
@@ -585,7 +918,7 @@ class FinanceTab:
                 FROM students s
                 CROSS JOIN fee_types ft
                 LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-                WHERE s.is_active = 1 AND ft.academic_year = '2024'
+                WHERE s.is_active = 1 AND ft.academic_year = %s
             """
             
             conditions = []
@@ -605,7 +938,10 @@ class FinanceTab:
             base_query += " GROUP BY s.student_id, s.first_name, s.last_name, s.class"
             base_query += " ORDER BY s.class, s.last_name, s.first_name"
             
-            results = db.execute_query(query=base_query, params=tuple(params) if params else None, fetch=True)
+            # Use current academic year
+            params = tuple(params) if params else tuple()
+            params = (config.Config.CURRENT_ACADEMIC_YEAR,) + params
+            results = db.execute_query(query=base_query, params=params, fetch=True)
             
             total_outstanding = 0
             with_balance = 0
@@ -629,14 +965,14 @@ class FinanceTab:
                     row['student_id'],
                     row['student_name'],
                     row['class'],
-                    f"${float(row['total_fees']):,.2f}",
-                    f"${float(row['amount_paid']):,.2f}",
-                    f"${balance:,.2f}",
+                    format_currency(float(row['total_fees'])),
+                    format_currency(float(row['amount_paid'])),
+                    format_currency(balance),
                     status
                 ))
             
             # Update summary
-            self.total_outstanding_var.set(f"${total_outstanding:,.2f}")
+            self.total_outstanding_var.set(format_currency(total_outstanding))
             self.with_balance_var.set(str(with_balance))
             self.fully_paid_var.set(str(fully_paid))
             
@@ -661,7 +997,7 @@ class FinanceTab:
             """
             result = db.execute_query(query, (first_day, today), fetch=True)
             if result:
-                self.month_expense_var.set(f"${result[0]['total']:,.2f}")
+                self.month_expense_var.set(format_currency(float(result[0]['total'])))
             
             # Get recent expenses
             query = """
@@ -685,7 +1021,7 @@ class FinanceTab:
                     row['expense_date'],
                     row['description'][:50] + "..." if len(row['description']) > 50 else row['description'],
                     row['category'] or 'Uncategorized',
-                    f"${row['amount']:,.2f}",
+                    format_currency(float(row['amount'])),
                     row['payment_method'],
                     row['receipt_number'] or ''
                 ))
@@ -704,18 +1040,20 @@ class FinanceTab:
             query = "SELECT COALESCE(SUM(amount_paid), 0) as total FROM student_fees"
             result = db.execute_query(query, fetch=True)
             if result:
-                self.total_income_var.set(f"${result[0]['total']:,.2f}")
+                from utils.helpers import format_currency
+                self.total_income_var.set(format_currency(float(result[0]['total'])))
             
             # Total expenses (all time)
             query = "SELECT COALESCE(SUM(amount), 0) as total FROM expenses"
             result = db.execute_query(query, fetch=True)
             if result:
-                self.total_expenses_var.set(f"${result[0]['total']:,.2f}")
+                from utils.helpers import format_currency
+                self.total_expenses_var.set(format_currency(float(result[0]['total'])))
             
             # Net balance
-            income = float(self.total_income_var.get().replace('$', '').replace(',', ''))
-            expenses = float(self.total_expenses_var.get().replace('$', '').replace(',', ''))
-            self.net_balance_var.set(f"${income - expenses:,.2f}")
+            income = float(parse_currency(self.total_income_var.get()))
+            expenses = float(parse_currency(self.total_expenses_var.get()))
+            self.net_balance_var.set(format_currency(income - expenses))
             
             # This month
             query = """
@@ -730,7 +1068,7 @@ class FinanceTab:
             if result:
                 month_income = result[0]['income']
                 month_expenses = result[0]['expenses']
-                self.this_month_var.set(f"${month_income - month_expenses:,.2f}")
+                self.this_month_var.set(format_currency(month_income - month_expenses))
             
             # Year to date
             query = """
@@ -745,31 +1083,54 @@ class FinanceTab:
             if result:
                 ytd_income = result[0]['income']
                 ytd_expenses = result[0]['expenses']
-                self.ytd_var.set(f"${ytd_income - ytd_expenses:,.2f}")
+                self.ytd_var.set(format_currency(ytd_income - ytd_expenses))
             
-            # Outstanding fees
-            query = """
+            # Outstanding fees (apply tuition mapping by class)
+            acad_year = config.Config.CURRENT_ACADEMIC_YEAR
+            query = f"""
                 SELECT COALESCE(SUM(balance), 0) as total
                 FROM (
                     SELECT 
-                        COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
+                        COALESCE(SUM(
+                            CASE
+                                WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                                WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                                ELSE ft.amount
+                            END
+                        ), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
                     FROM students s
                     CROSS JOIN fee_types ft
                     LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-                    WHERE s.is_active = 1 AND ft.academic_year = '2024'
+                    WHERE s.is_active = 1 AND ft.academic_year = '{acad_year}'
                     GROUP BY s.student_id
                     HAVING balance > 0
                 ) as outstanding
             """
             result = db.execute_query(query, fetch=True)
             if result:
-                self.outstanding_var.set(f"${result[0]['total']:,.2f}")
+                from utils.helpers import format_currency
+                self.outstanding_var.set(format_currency(float(result[0]['total'])))
             
             # Load monthly breakdown
             self.load_monthly_breakdown()
             
             # Load expense categories
             self.load_expense_categories()
+            
+            # Load fee totals by type
+            try:
+                from models.finance import FinancialManager
+                for item in self.fee_totals_tree.get_children():
+                    self.fee_totals_tree.delete(item)
+                fee_totals = FinancialManager.get_collected_by_fee_type()
+                for row in fee_totals:
+                    self.fee_totals_tree.insert('', 'end', values=(
+                        row.get('fee_name'),
+                        format_currency(float(row.get('total_collected', 0))),
+                        row.get('payment_count', 0)
+                    ))
+            except Exception as e:
+                print(f"Error loading fee totals: {e}")
             
         except Exception as e:
             print(f"Error loading financial summary: {e}")
@@ -830,9 +1191,9 @@ class FinanceTab:
             for month, data in sorted(monthly_data.items()):
                 self.monthly_tree.insert('', 'end', values=(
                     month,
-                    f"${data['income']:,.2f}",
-                    f"${data['expenses']:,.2f}",
-                    f"${data['net']:,.2f}"
+                    format_currency(data['income']),
+                    format_currency(data['expenses']),
+                    format_currency(data['net'])
                 ))
                 
         except Exception as e:
@@ -861,7 +1222,7 @@ class FinanceTab:
                 self.category_tree.insert('', 'end', values=(
                     row['category'],
                     row['count'],
-                    f"${float(row['total']):,.2f}"
+                    format_currency(float(row['total']))
                 ))
                 
         except Exception as e:
@@ -1033,7 +1394,7 @@ class FinanceTab:
         item = self.balances_tree.item(selected[0])
         student_id = item['values'][0]
         student_name = item['values'][1]
-        balance = float(item['values'][5].replace('$', '').replace(',', ''))
+        balance = float(parse_currency(item['values'][5]))
         
         if balance <= 0:
             messagebox.showinfo("Info", f"{student_name} has no outstanding balance")
@@ -1066,7 +1427,14 @@ class FinanceTab:
             dialog.transient(self.frame)
             dialog.grab_set()
             
-            # Get fee details
+            # Get student's class so we can override tuition amounts
+            try:
+                sres = db.execute_query("SELECT class FROM students WHERE student_id=%s", (student_id,), fetch=True)
+                student_class = sres[0]['class'] if sres else ''
+            except Exception:
+                student_class = ''
+
+            # Get fee details for academic year
             query = """
                 SELECT 
                     ft.fee_name,
@@ -1076,11 +1444,11 @@ class FinanceTab:
                     MAX(sf.payment_date) as last_payment
                 FROM fee_types ft
                 LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.student_id = %s
-                WHERE ft.academic_year = '2024'
+                WHERE ft.academic_year = %s
                 GROUP BY ft.fee_type_id, ft.fee_name, ft.amount
                 ORDER BY ft.fee_name
             """
-            results = db.execute_query(query, (student_id,), fetch=True)
+            results = db.execute_query(query, (student_id, config.Config.CURRENT_ACADEMIC_YEAR), fetch=True)
             
             # Create treeview
             columns = ['Fee Type', 'Expected', 'Paid', 'Balance', 'Last Payment']
@@ -1096,26 +1464,39 @@ class FinanceTab:
             tree.pack(side='left', fill='both', expand=True, padx=10, pady=10)
             scrollbar.pack(side='right', fill='y', pady=10)
             
-            # Add data
+            # Add data (apply tuition overrides)
             total_expected = total_paid = total_balance = 0
             for row in results:
+                fee_name = row.get('fee_name') or ''
+                expected_amt = float(row.get('expected_amount') or 0)
+                paid_amt = float(row.get('paid_amount') or 0)
+
+                if 'tuition' in fee_name.lower():
+                    cls_lower = (student_class or '').lower()
+                    if 'nursery' in cls_lower or 'reception' in cls_lower:
+                        expected_amt = 45000.0
+                    else:
+                        expected_amt = 85000.0
+
+                balance_val = expected_amt - paid_amt
+
                 tree.insert('', 'end', values=(
-                    row['fee_name'],
-                    f"${float(row['expected_amount']):,.2f}",
-                    f"${float(row['paid_amount']):,.2f}",
-                    f"${float(row['balance']):,.2f}",
-                    row['last_payment'] or 'None'
+                    fee_name,
+                    format_currency(expected_amt),
+                    format_currency(paid_amt),
+                    format_currency(balance_val),
+                    row.get('last_payment') or 'None'
                 ))
-                total_expected += float(row['expected_amount'])
-                total_paid += float(row['paid_amount'])
-                total_balance += float(row['balance'])
+                total_expected += expected_amt
+                total_paid += paid_amt
+                total_balance += balance_val
             
             # Add totals row
             tree.insert('', 'end', values=(
                 'TOTAL',
-                f"${total_expected:,.2f}",
-                f"${total_paid:,.2f}",
-                f"${total_balance:,.2f}",
+                format_currency(total_expected),
+                format_currency(total_paid),
+                format_currency(total_balance),
                 ''
             ))
             
@@ -1172,7 +1553,7 @@ class FinanceTab:
                 tree.insert('', 'end', values=(
                     row['payment_date'],
                     row['fee_name'],
-                    f"${row['amount_paid']:,.2f}",
+                    format_currency(float(row['amount_paid'])),
                     row['payment_method'],
                     row['receipt_number'] or '',
                     row['description'] or ''
@@ -1183,7 +1564,7 @@ class FinanceTab:
             summary_frame = ttk.Frame(dialog)
             summary_frame.pack(fill='x', padx=10, pady=5)
             
-            ttk.Label(summary_frame, text=f"Total Payments: ${total:,.2f}", font=('Arial', 10, 'bold')).pack()
+            ttk.Label(summary_frame, text=f"Total Payments: {format_currency(total)}", font=('Arial', 10, 'bold')).pack()
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load payment history: {str(e)}")
@@ -1197,7 +1578,7 @@ class FinanceTab:
         dialog.grab_set()
         
         ttk.Label(dialog, text=f"Student: {student_name}", font=('Arial', 12, 'bold')).pack(pady=10)
-        ttk.Label(dialog, text=f"Outstanding Balance: ${balance:,.2f}").pack(pady=5)
+        ttk.Label(dialog, text=f"Outstanding Balance: {format_currency(balance)}").pack(pady=5)
         
         # Payment amount
         ttk.Label(dialog, text="Payment Amount:").pack(pady=5)
@@ -1217,11 +1598,11 @@ class FinanceTab:
                     return
                 
                 if amount > balance:
-                    messagebox.showwarning("Warning", f"Amount cannot exceed balance of ${balance:,.2f}")
+                    messagebox.showwarning("Warning", f"Amount cannot exceed balance of {format_currency(balance)}")
                     return
                 
                 # Record payment (simplified - would need fee type selection)
-                messagebox.showinfo("Info", f"Payment of ${amount:,.2f} recorded for {student_name}")
+                messagebox.showinfo("Info", f"Payment of {format_currency(amount)} recorded for {student_name}")
                 dialog.destroy()
                 
                 # Refresh data

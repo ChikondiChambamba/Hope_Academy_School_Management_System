@@ -58,6 +58,13 @@ class Teacher:
     
     def save(self) -> tuple[bool, str]:
         """Save teacher to database"""
+        # Coerce hire_date string to date if necessary
+        if isinstance(self.hire_date, str):
+            try:
+                self.hire_date = datetime.strptime(self.hire_date, '%Y-%m-%d').date()
+            except Exception:
+                pass
+
         is_valid, message = self.validate()
         if not is_valid:
             return False, message
@@ -69,7 +76,13 @@ class Teacher:
                 # Remove timestamps
                 teacher_data.pop('created_at', None)
                 teacher_data.pop('updated_at', None)
-                
+                # Preserve existing teacher_code when updating if none provided
+                current_code = self.teacher_code or ''
+                new_code = teacher_data.get('teacher_code') or current_code
+                if not new_code:
+                    # As a last resort, generate a new code
+                    new_code = self.generate_teacher_code()
+
                 query = """
                     UPDATE teachers SET 
                     teacher_code = %s, first_name = %s, last_name = %s,
@@ -78,7 +91,7 @@ class Teacher:
                     WHERE teacher_id = %s
                 """
                 params = (
-                    teacher_data['teacher_code'],
+                    new_code,
                     teacher_data['first_name'],
                     teacher_data['last_name'],
                     teacher_data['phone'],
@@ -88,8 +101,10 @@ class Teacher:
                     teacher_data['is_active'],
                     self.teacher_id
                 )
-                
+
                 db.execute_query(query, params)
+                # Update in-memory value
+                self.teacher_code = new_code
                 return True, "Teacher updated successfully"
                 
             else:  # Insert new
@@ -124,6 +139,11 @@ class Teacher:
     def generate_teacher_code(self) -> str:
         """Generate unique teacher code"""
         try:
+            # Optionally use random IDs for compatibility with large datasets
+            if getattr(config.Config, 'USE_RANDOM_IDS', False):
+                import uuid
+                return f"TCH{uuid.uuid4().hex[:8].upper()}"
+
             # Get next teacher number
             query = """
                 SELECT MAX(CAST(SUBSTRING(teacher_code, 4) AS UNSIGNED)) as max_num
@@ -132,11 +152,11 @@ class Teacher:
             """
             result = db.execute_query(query, fetch=True)
             
-            if result and result[0]['max_num']:
+            if result and result[0].get('max_num'):
                 next_num = result[0]['max_num'] + 1
             else:
                 next_num = 101
-            
+
             return f"TCH{next_num}"
         except:
             # Fallback to timestamp-based code
@@ -255,5 +275,19 @@ class TeacherManager:
             query = "UPDATE teachers SET is_active = 0 WHERE teacher_id = %s"
             db.execute_query(query, (teacher_id,))
             return True, "Teacher deactivated successfully"
+        except Exception as e:
+            return False, f"Database error: {str(e)}"
+
+    @staticmethod
+    def permanently_delete_teacher(teacher_id: int) -> tuple[bool, str]:
+        """Permanently remove a teacher row from the database."""
+        teacher = Teacher.get_by_id(teacher_id)
+        if not teacher:
+            return False, "Teacher not found"
+
+        try:
+            query = "DELETE FROM teachers WHERE teacher_id = %s"
+            db.execute_query(query, (teacher_id,))
+            return True, "Teacher permanently deleted"
         except Exception as e:
             return False, f"Database error: {str(e)}"

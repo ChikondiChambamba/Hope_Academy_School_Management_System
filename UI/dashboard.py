@@ -26,8 +26,18 @@ class DashboardTab:
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
         
-        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        # Create window and ensure it always matches canvas width so cards fill available space
+        self._dashboard_window = canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        # When canvas resizes, update inner window width to match so content stretches
+        def _on_canvas_config(event):
+            try:
+                canvas.itemconfigure(self._dashboard_window, width=event.width)
+            except Exception:
+                pass
+
+        canvas.bind('<Configure>', _on_canvas_config)
         
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -228,11 +238,12 @@ class DashboardTab:
             query = """
                 SELECT COALESCE(SUM(amount_paid), 0) as total 
                 FROM student_fees 
-                WHERE payment_date = CURDATE()
+                WHERE DATE(payment_date) = CURDATE()
             """
             result = db.execute_query(query, fetch=True)
             if result:
-                self.stats_vars['today_income'].set(f"${result[0]['total']:,.2f}")
+                from utils.helpers import format_currency
+                self.stats_vars['today_income'].set(format_currency(float(result[0]['total'])))
             
             # Today's attendance
             query = """
@@ -259,19 +270,26 @@ class DashboardTab:
             if result:
                 self.stats_vars['low_stock'].set(str(result[0]['count']))
             
-            # Pending fees (students with balance > 0)
-            query = """
+            # Pending fees (students with balance > 0) - use tuition mapping
+            acad_year = config.Config.CURRENT_ACADEMIC_YEAR
+            query = f"""
                 SELECT COUNT(DISTINCT s.student_id) as count
                 FROM students s
                 JOIN (
                     SELECT 
                             s.student_id,
-                            SUM(ft.amount) - COALESCE(SUM(sf.amount_paid), 0) as balance
+                            SUM(
+                                CASE
+                                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                                    ELSE ft.amount
+                                END
+                            ) - COALESCE(SUM(sf.amount_paid), 0) as balance
                         FROM students s
                         CROSS JOIN fee_types ft
                         LEFT JOIN student_fees sf ON s.student_id = sf.student_id 
                             AND ft.fee_type_id = sf.fee_type_id
-                        WHERE ft.academic_year = '2024'
+                        WHERE ft.academic_year = '{acad_year}'
                         GROUP BY s.student_id
                         HAVING balance > 0
                 ) balances ON s.student_id = balances.student_id
@@ -296,7 +314,7 @@ class DashboardTab:
                 SELECT 
                     sf.payment_date as time,
                     CONCAT('Fee Payment - ', s.first_name, ' ', s.last_name) as activity,
-                    CONCAT('$', sf.amount_paid, ' (', ft.fee_name, ')') as details,
+                    CONCAT(%s, sf.amount_paid, ' (', ft.fee_name, ')') as details,
                     'System' as user
                 FROM student_fees sf
                 JOIN students s ON sf.student_id = s.student_id
@@ -304,8 +322,8 @@ class DashboardTab:
                 ORDER BY sf.payment_date DESC, sf.created_at DESC
                 LIMIT 10
             """
-            
-            results = db.execute_query(query, fetch=True)
+
+            results = db.execute_query(query, (config.Config.CURRENCY_SYMBOL,), fetch=True)
             for row in results:
                 self.activities_tree.insert('', 'end', values=(
                     row['time'],
@@ -396,26 +414,51 @@ class DashboardTab:
     
     def take_attendance(self):
         """Open attendance tab"""
-        # This would switch to attendance tab in main notebook
-        messagebox.showinfo("Quick Action", "Redirecting to Attendance tab...")
-        # In main app: notebook.select(attendance_tab_index)
+        # Switch to Attendance tab in the main notebook (if present)
+        if self.select_tab_by_name('Attendance'):
+            return
+        messagebox.showinfo("Quick Action", "Attendance tab not available")
     
     def record_payment(self):
         """Record a payment"""
+        # Open fee payment dialog if Students tab exists (user can select student there)
+        # Otherwise show informational message.
+        if self.select_tab_by_name('Students'):
+            # Selecting Students tab will allow recording payments from there
+            return
         messagebox.showinfo("Quick Action", "Opening fee payment dialog...")
     
     def add_student(self):
         """Add new student"""
-        messagebox.showinfo("Quick Action", "Opening add student dialog...")
+        # Select the Students tab and let the user click Add, or open Students tab directly
+        if self.select_tab_by_name('Students'):
+            return
+        messagebox.showinfo("Quick Action", "Students tab not available")
     
     def generate_report(self):
         """Generate report"""
-        messagebox.showinfo("Quick Action", "Opening report generator...")
+        # Select Reports tab if available
+        if self.select_tab_by_name('Reports'):
+            return
+        messagebox.showinfo("Quick Action", "Reports tab not available")
     
     def check_inventory(self):
         """Check inventory"""
-        messagebox.showinfo("Quick Action", "Redirecting to Inventory tab...")
+        if self.select_tab_by_name('Inventory'):
+            return
+        messagebox.showinfo("Quick Action", "Inventory tab not available")
     
     def send_notifications(self):
         """Send notifications"""
         messagebox.showinfo("Quick Action", "Opening notification system...")
+
+    def select_tab_by_name(self, name: str) -> bool:
+        """Select a notebook tab by its displayed text. Returns True if selected."""
+        try:
+            for tab_id in self.parent.tabs():
+                if self.parent.tab(tab_id, 'text') == name:
+                    self.parent.select(tab_id)
+                    return True
+        except Exception:
+            pass
+        return False

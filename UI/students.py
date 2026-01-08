@@ -8,6 +8,7 @@ import config
 from models.student import Student, StudentManager
 from models.finance import FinancialManager
 from UI.dialogs import StudentDialog, FeePaymentDialog, ConfirmationDialog
+from utils.helpers import format_currency, parse_currency
 
 class StudentsTab:
     def __init__(self, parent):
@@ -33,10 +34,36 @@ class StudentsTab:
         # Control buttons frame (top)
         controls_frame = ttk.Frame(main_container)
         controls_frame.pack(fill='x', pady=(0, 10))
-        
-        # Left side buttons
+
+        # Left side: class list + action buttons
         left_frame = ttk.Frame(controls_frame)
         left_frame.pack(side='left')
+
+        # Class horizontal button bar for quick selection (Reception -> Grade 7)
+        self.default_classes = ['Reception', 'Nursery', 'Grade 1', 'Grade 2', 'Grade 3', 'Grade 4', 'Grade 5', 'Grade 6', 'Grade 7']
+        class_frame = ttk.Frame(left_frame)
+        class_frame.pack(side='left', padx=(0,10), fill='x')
+        ttk.Label(class_frame, text='Classes:').pack(anchor='w')
+        # Horizontal buttons
+        self.class_buttons = {}
+        btn_row = ttk.Frame(class_frame)
+        btn_row.pack(fill='x')
+        for cls in self.default_classes:
+            b = tk.Button(btn_row, text=cls, padx=6, pady=2, relief='raised', command=lambda c=cls: self.on_class_button_select(c))
+            b.pack(side='left', padx=3, pady=2)
+            # store default colors so we can restore them when toggling
+            try:
+                b.default_bg = b.cget('bg')
+            except Exception:
+                b.default_bg = None
+            try:
+                b.default_fg = b.cget('fg')
+            except Exception:
+                b.default_fg = None
+            self.class_buttons[cls] = b
+        # Delete class button
+        del_btn = ttk.Button(class_frame, text='Delete Class', command=self.delete_class, style='Danger.TButton')
+        del_btn.pack(side='left', padx=6)
         
         self.add_button = ttk.Button(
             left_frame, 
@@ -69,12 +96,16 @@ class StudentsTab:
             style='Warning.TButton'
         )
         self.fee_button.pack(side='left', padx=5)
+
+        # Initially disable action buttons until a class is selected
+        for btn in (self.add_button, self.edit_button, self.delete_button, self.fee_button):
+            btn.state(['disabled'])
         
         # Right side search
         right_frame = ttk.Frame(controls_frame)
         right_frame.pack(side='right')
         
-        # Filter by class
+        # Filter by class (kept for search convenience)
         ttk.Label(right_frame, text="Class:").pack(side='left', padx=(0, 5))
         self.class_var = tk.StringVar()
         self.class_combo = ttk.Combobox(
@@ -86,6 +117,16 @@ class StudentsTab:
         )
         self.class_combo.pack(side='left', padx=(0, 10))
         self.class_combo.bind('<<ComboboxSelected>>', lambda e: self.filter_by_class())
+        
+        # Show inactive checkbox
+        self.show_inactive_var = tk.BooleanVar(value=False)
+        self.show_inactive_cb = ttk.Checkbutton(
+            right_frame,
+            text='Show Inactive',
+            variable=self.show_inactive_var,
+            command=self.on_show_inactive_toggle
+        )
+        self.show_inactive_cb.pack(side='left', padx=(0, 10))
         
         # Search
         ttk.Label(right_frame, text="Search:").pack(side='left', padx=(0, 5))
@@ -99,14 +140,24 @@ class StudentsTab:
             command=self.search_students,
             width=5
         )
-        search_button.pack(side='left', padx=(0, 5))
-        
+        # Stack the Go and Refresh buttons vertically so they don't stretch sideways
+        buttons_frame = ttk.Frame(right_frame, width=60)
+        buttons_frame.pack(side='left', padx=(0, 5))
+        # Prevent the frame from expanding to fill available horizontal space
+        try:
+            buttons_frame.pack_propagate(False)
+        except Exception:
+            pass
+
+        search_button.pack(in_=buttons_frame, side='top', pady=(0, 4))
+
         refresh_button = ttk.Button(
-            right_frame,
+            buttons_frame,
             text="Refresh",
-            command=self.load_students
+            command=self.load_students,
+            width=8
         )
-        refresh_button.pack(side='left')
+        refresh_button.pack(side='top')
         
         # Bind Enter key to search
         self.search_entry.bind('<Return>', lambda e: self.search_students())
@@ -178,8 +229,8 @@ class StudentsTab:
         tree_frame.grid_columnconfigure(0, weight=1)
         tree_frame.grid_rowconfigure(0, weight=1)
         
-        # Bind double-click to edit
-        self.students_tree.bind('<Double-1>', lambda e: self.edit_student())
+        # Bind double-click to preview student details
+        self.students_tree.bind('<Double-1>', lambda e: self.preview_student())
         
         # Bind selection change
         self.students_tree.bind('<<TreeviewSelect>>', self.on_selection_change)
@@ -237,13 +288,62 @@ class StudentsTab:
         try:
             # Query database for distinct classes
             from database.connection import db
-            query = "SELECT DISTINCT class FROM students WHERE is_active = 1 ORDER BY class"
-            results = db.execute_query(query, fetch=True)
+            if getattr(self, 'show_inactive_var', None) and self.show_inactive_var.get():
+                query = "SELECT DISTINCT class FROM students ORDER BY class"
+                results = db.execute_query(query, fetch=True)
+            else:
+                query = "SELECT DISTINCT class FROM students WHERE is_active = 1 ORDER BY class"
+                results = db.execute_query(query, fetch=True)
             
             classes = [r['class'] for r in results] if results else []
             return ['All'] + classes
         except:
             return ['All']
+
+    def on_class_listbox_select(self, event):
+        """Deprecated: kept for compatibility. Use `on_class_button_select` instead."""
+        return
+
+    def on_class_button_select(self, class_name):
+        """Handle selection from the horizontal class buttons"""
+        # Visual toggle
+        primary = getattr(config.Config, 'UI', {}).get('primary_color', '#2E86C1')
+        sel_fg = 'white'
+
+        for name, btn in self.class_buttons.items():
+            try:
+                # reset appearance
+                btn.config(relief='raised')
+                if getattr(btn, 'default_bg', None) is not None:
+                    btn.config(bg=btn.default_bg)
+                if getattr(btn, 'default_fg', None) is not None:
+                    btn.config(fg=btn.default_fg)
+            except Exception:
+                pass
+
+        # Mark selected
+        sel_btn = self.class_buttons.get(class_name)
+        if sel_btn:
+            try:
+                sel_btn.config(relief='sunken')
+                # Apply themed color
+                sel_btn.config(bg=primary, fg=sel_fg, activebackground=primary)
+            except Exception:
+                pass
+
+        # Set the combobox and filter
+        self.class_var.set(class_name)
+        try:
+            self.class_combo.set(class_name)
+        except Exception:
+            pass
+
+        # Enable action buttons
+        for btn in (self.add_button, self.edit_button, self.delete_button, self.fee_button):
+            btn.state(['!disabled'])
+
+        # Apply filter
+        self.filter_by_class()
     
     def load_students(self):
         """Load students into treeview"""
@@ -252,8 +352,9 @@ class StudentsTab:
             self.students_tree.delete(item)
         
         try:
-            # Get all active students
-            students = Student.get_all()
+            # Determine whether to include inactive students
+            include_inactive = self.show_inactive_var.get() if getattr(self, 'show_inactive_var', None) else False
+            students = Student.get_all(active_only=(not include_inactive))
             
             # Insert into treeview
             for student in students:
@@ -261,10 +362,11 @@ class StudentsTab:
                 balance = student.balance
                 
                 # Color coding for balance
+                from utils.helpers import format_currency
                 if balance > 0:
-                    balance_display = f"${balance:,.2f} ✗"
+                    balance_display = f"{format_currency(balance)} ✗"
                 else:
-                    balance_display = f"${abs(balance):,.2f} ✓"
+                    balance_display = f"{format_currency(abs(balance))} ✓"
                 
                 self.students_tree.insert('', 'end', values=(
                     student.student_id,
@@ -318,9 +420,9 @@ class StudentsTab:
                     student_code,
                     student_name,
                     class_name,
-                    f"${total_due:,.2f}",
-                    f"${total_paid:,.2f}",
-                    f"${balance:,.2f}"
+                    format_currency(total_due),
+                    format_currency(total_paid),
+                    format_currency(balance)
                 ), tags=tags)
             
             # Configure tag colors
@@ -334,10 +436,10 @@ class StudentsTab:
     def sort_balances(self):
         """Sort balances by balance amount"""
         items = [(self.balances_tree.set(item, 'Balance'), item) 
-                for item in self.balances_tree.get_children('')]
-        
-        # Sort by balance value (extract number from string)
-        items.sort(key=lambda x: float(x[0].replace('$', '').replace(',', '')))
+            for item in self.balances_tree.get_children('')]
+
+        # Sort by balance value (use parse_currency to extract number)
+        items.sort(key=lambda x: float(parse_currency(x[0])))
         
         for index, (val, item) in enumerate(items):
             self.balances_tree.move(item, '', index)
@@ -355,14 +457,15 @@ class StudentsTab:
             self.students_tree.delete(item)
         
         try:
+            include_inactive = self.show_inactive_var.get() if getattr(self, 'show_inactive_var', None) else False
             # Search students
-            students = Student.search(search_term)
+            students = Student.search(search_term, active_only=(not include_inactive))
             
             # Insert results
             for student in students:
                 status = "Active" if student.is_active else "Inactive"
                 balance = student.balance
-                balance_display = f"${balance:,.2f} ✗" if balance > 0 else f"${abs(balance):,.2f} ✓"
+                balance_display = f"{format_currency(balance)} ✗" if balance > 0 else f"{format_currency(abs(balance))} ✓"
                 
                 self.students_tree.insert('', 'end', values=(
                     student.student_id,
@@ -397,14 +500,15 @@ class StudentsTab:
             self.students_tree.delete(item)
         
         try:
+            include_inactive = self.show_inactive_var.get() if getattr(self, 'show_inactive_var', None) else False
             # Get students by class
-            students = Student.get_by_class(selected_class)
+            students = Student.get_by_class(selected_class, active_only=(not include_inactive))
             
             # Insert into treeview
             for student in students:
                 status = "Active" if student.is_active else "Inactive"
                 balance = student.balance
-                balance_display = f"${balance:,.2f} ✗" if balance > 0 else f"${abs(balance):,.2f} ✓"
+                balance_display = f"{format_currency(balance)} ✗" if balance > 0 else f"{format_currency(abs(balance))} ✓"
                 
                 self.students_tree.insert('', 'end', values=(
                     student.student_id,
@@ -425,10 +529,42 @@ class StudentsTab:
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to filter by class: {str(e)}")
+
+    def on_show_inactive_toggle(self):
+        """Handler for Show Inactive checkbox - refresh class list and current view."""
+        try:
+            # Refresh class combobox values
+            vals = self.get_class_list()
+            self.class_combo['values'] = vals
+            # If current selection is not in list, reset to 'All'
+            current = self.class_var.get()
+            if current not in vals:
+                self.class_var.set('All')
+                try:
+                    self.class_combo.set('All')
+                except Exception:
+                    pass
+
+            # Reload students respecting the new flag
+            self.load_students()
+        except Exception:
+            pass
     
     def add_student(self):
         """Open dialog to add new student"""
-        dialog = StudentDialog(self.frame, title="Add New Student")
+        # If a class is selected in the left listbox, prefill it in the dialog
+        selected_class = None
+        # Check selected class from class_var (set when a class button is pressed)
+        if self.class_var.get() and self.class_var.get() != 'All':
+            selected_class = self.class_var.get()
+
+        student_obj = None
+        if selected_class:
+            # create a lightweight Student object with default class
+            from models.student import Student as StudentModel
+            student_obj = StudentModel(class_name=selected_class)
+
+        dialog = StudentDialog(self.frame, title="Add New Student", student=student_obj)
         dialog.show()
         
         # Refresh if student was added
@@ -544,6 +680,89 @@ class StudentsTab:
                 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to record payment: {str(e)}")
+
+    def preview_student(self):
+        """Preview selected student's full information (read-only)."""
+        selected = self.students_tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select a student to preview")
+            return
+
+        item = selected[0]
+        values = self.students_tree.item(item, 'values')
+        student_id = values[0]
+
+        try:
+            student = Student.get_by_id(student_id)
+            if not student:
+                messagebox.showerror("Error", "Student not found")
+                return
+
+            from UI.dialogs import StudentPreviewDialog
+            dialog = StudentPreviewDialog(self.frame, title=f"Student Preview - {student.first_name} {student.last_name}", student=student)
+            dialog.show()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load student preview: {str(e)}")
+
+    def delete_class(self):
+        """Delete a class record; optionally delete or unassign students in it."""
+        selected_class = self.class_var.get()
+        if not selected_class or selected_class == 'All':
+            messagebox.showwarning("No Class Selected", "Please select a class to delete")
+            return
+
+        # Confirm class deletion
+        if not messagebox.askyesno("Delete Class", f"Are you sure you want to delete class '{selected_class}'?"):
+            return
+
+        # Ask whether to delete students in the class
+        delete_students = messagebox.askyesno("Delete Students?", "Also delete all students in this class and their records?\nYes: delete students and their records.\nNo: unassign students from the class.")
+
+        from database.connection import db
+        try:
+            # If deleting students, fetch them and remove
+            if delete_students:
+                students = Student.get_by_class(selected_class)
+                for s in students:
+                    StudentManager.delete_student(s.student_id)
+            else:
+                # Unassign students: set class to empty string
+                query = "UPDATE students SET class = '' WHERE class = %s"
+                db.execute_query(query, (selected_class,))
+
+            # Delete class record from classes table if exists
+            try:
+                query = "DELETE FROM classes WHERE class_name = %s"
+                db.execute_query(query, (selected_class,))
+            except Exception:
+                # If classes table doesn't exist or delete fails, ignore
+                pass
+
+            messagebox.showinfo("Success", f"Class '{selected_class}' removed.")
+            # Refresh UI
+            # Reset class_var and combobox
+            self.class_var.set('All')
+            try:
+                self.class_combo['values'] = self.get_class_list()
+                self.class_combo.set('All')
+            except Exception:
+                pass
+            # Reset class buttons appearance
+            for name, btn in self.class_buttons.items():
+                try:
+                    btn.config(relief='raised')
+                    if getattr(btn, 'default_bg', None) is not None:
+                        btn.config(bg=btn.default_bg)
+                    if getattr(btn, 'default_fg', None) is not None:
+                        btn.config(fg=btn.default_fg)
+                except Exception:
+                    pass
+
+            self.load_students()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete class: {str(e)}")
     
     def on_selection_change(self, event):
         """Handle treeview selection change"""

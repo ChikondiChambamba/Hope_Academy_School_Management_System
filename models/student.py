@@ -21,6 +21,7 @@ class Student:
     birth_date: Optional[date] = None
     parent_name: str = ""
     parent_phone: str = ""
+    parent_email: str = ""
     address: str = ""
     enrollment_date: Optional[date] = None
     is_active: bool = True
@@ -62,6 +63,10 @@ class Student:
         # Validate phone number
         if self.parent_phone and not Validators.validate_phone(self.parent_phone):
             return False, "Invalid phone number format"
+
+        # Validate parent email
+        if self.parent_email and not Validators.validate_email(self.parent_email):
+            return False, "Invalid parent email format"
         
         # Check age
         if self.birth_date:
@@ -75,6 +80,19 @@ class Student:
     
     def save(self) -> tuple[bool, str]:
         """Save student to database"""
+        # Coerce date strings to date objects if needed (handles dialog input)
+        if isinstance(self.birth_date, str):
+            try:
+                self.birth_date = datetime.strptime(self.birth_date, '%Y-%m-%d').date()
+            except Exception:
+                pass
+
+        if isinstance(self.enrollment_date, str):
+            try:
+                self.enrollment_date = datetime.strptime(self.enrollment_date, '%Y-%m-%d').date()
+            except Exception:
+                pass
+
         # Validate before saving
         is_valid, message = self.validate()
         if not is_valid:
@@ -93,7 +111,7 @@ class Student:
                     UPDATE students SET 
                     student_code = %s, first_name = %s, last_name = %s, 
                     class = %s, birth_date = %s, parent_name = %s, 
-                    parent_phone = %s, address = %s, enrollment_date = %s,
+                    parent_phone = %s, parent_email = %s, address = %s, enrollment_date = %s,
                     is_active = %s
                     WHERE student_id = %s
                 """
@@ -105,6 +123,7 @@ class Student:
                     student_data['birth_date'],
                     student_data['parent_name'],
                     student_data['parent_phone'],
+                    student_data.get('parent_email'),
                     student_data['address'],
                     student_data['enrollment_date'],
                     student_data['is_active'],
@@ -118,12 +137,21 @@ class Student:
                 # Generate student code if not provided
                 if not student_data['student_code']:
                     student_data['student_code'] = self.generate_student_code()
-                
+                # Prevent duplicate active student (same first/last name in same class)
+                try:
+                    dup_query = "SELECT COUNT(*) as cnt FROM students WHERE LOWER(first_name)=LOWER(%s) AND LOWER(last_name)=LOWER(%s) AND class=%s AND is_active = 1"
+                    dup_res = db.execute_query(dup_query, (student_data['first_name'], student_data['last_name'], student_data['class_name']), fetch=True)
+                    if dup_res and dup_res[0].get('cnt', 0) > 0:
+                        return False, "A student with the same name already exists in this class"
+                except Exception:
+                    # On error, continue to attempt insert (do not block due to dup check failure)
+                    pass
+
                 query = """
                     INSERT INTO students 
                     (student_code, first_name, last_name, class, birth_date, 
-                     parent_name, parent_phone, address, enrollment_date, is_active)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     parent_name, parent_phone, parent_email, address, enrollment_date, is_active)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 params = (
                     student_data['student_code'],
@@ -133,6 +161,7 @@ class Student:
                     student_data['birth_date'],
                     student_data['parent_name'],
                     student_data['parent_phone'],
+                    student_data.get('parent_email'),
                     student_data['address'],
                     student_data['enrollment_date'],
                     student_data['is_active']
@@ -146,37 +175,39 @@ class Student:
             return False, f"Database error: {str(e)}"
     
     def delete(self) -> tuple[bool, str]:
-        """Soft delete student (set is_active to False)"""
+        """Hard delete student and cascade-delete related records."""
         if not self.student_id:
             return False, "Student ID is required"
-        
+
         try:
-            query = "UPDATE students SET is_active = 0 WHERE student_id = %s"
+            # Deleting the student row will cascade to student_fees, attendance, student_classes
+            query = "DELETE FROM students WHERE student_id = %s"
             db.execute_query(query, (self.student_id,))
-            self.is_active = False
-            return True, "Student deactivated successfully"
+            return True, "Student deleted successfully"
         except Exception as e:
             return False, f"Database error: {str(e)}"
     
     def generate_student_code(self) -> str:
         """Generate unique student code"""
         try:
-            # Get current year
-            current_year = date.today().year % 100
-            
-            # Get next student number
+            # Optionally use random IDs for compatibility with large datasets
+            if getattr(config.Config, 'USE_RANDOM_IDS', False):
+                import uuid
+                return f"STU{uuid.uuid4().hex[:8].upper()}"
+
+            # Get next sequential student number
             query = """
                 SELECT MAX(CAST(SUBSTRING(student_code, 4) AS UNSIGNED)) as max_num
                 FROM students 
                 WHERE student_code LIKE 'STU%'
             """
             result = db.execute_query(query, fetch=True)
-            
-            if result and result[0]['max_num']:
+
+            if result and result[0].get('max_num'):
                 next_num = result[0]['max_num'] + 1
             else:
                 next_num = 1001
-            
+
             return f"STU{next_num}"
         except:
             # Fallback to timestamp-based code
@@ -254,14 +285,30 @@ class Student:
         return cls(**data)
     
     @classmethod
-    def get_all(cls, academic_year: str = None) -> List['Student']:
-        """Get all active students"""
+    def get_all(cls, academic_year: str = None, active_only: bool = True) -> List['Student']:
+        """Get all students; by default only active students unless `active_only=False`."""
         if not academic_year:
             academic_year = config.Config.CURRENT_ACADEMIC_YEAR
-        
+
         try:
-            query = Queries.GET_ALL_STUDENTS
-            results = db.execute_query(query, (academic_year,), fetch=True)
+            if active_only:
+                query = Queries.GET_ALL_STUDENTS
+                results = db.execute_query(query, (academic_year,), fetch=True)
+            else:
+                # Similar to GET_ALL_STUDENTS but include inactive rows
+                query = """
+                    SELECT s.*, 
+                           COALESCE(SUM(sf.amount_paid), 0) AS total_paid,
+                           COALESCE(SUM(ft.amount), 0) AS total_due,
+                           COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
+                    FROM students s
+                    LEFT JOIN student_fees sf ON s.student_id = sf.student_id
+                    LEFT JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id AND ft.academic_year = %s
+                    GROUP BY s.student_id
+                    ORDER BY s.last_name, s.first_name
+                """
+                results = db.execute_query(query, (academic_year,), fetch=True)
+
             return [cls.from_dict(row) for row in results]
         except:
             return []
@@ -279,28 +326,62 @@ class Student:
             return None
     
     @classmethod
-    def search(cls, search_term: str, academic_year: str = None) -> List['Student']:
-        """Search students by name or code"""
+    def search(cls, search_term: str, academic_year: str = None, active_only: bool = True) -> List['Student']:
+        """Search students by name or code; optionally include inactive records."""
         if not academic_year:
             academic_year = config.Config.CURRENT_ACADEMIC_YEAR
-        
+
         try:
-            query = Queries.SEARCH_STUDENTS
             search_pattern = f"%{search_term}%"
-            results = db.execute_query(query, (academic_year, search_pattern, search_pattern, search_pattern), fetch=True)
+            if active_only:
+                query = Queries.SEARCH_STUDENTS
+                params = (academic_year, search_pattern, search_pattern, search_pattern)
+            else:
+                # Variant that doesn't filter on is_active
+                query = """
+                    SELECT s.*, 
+                           COALESCE(SUM(sf.amount_paid), 0) AS total_paid,
+                           COALESCE(SUM(ft.amount), 0) AS total_due,
+                           COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
+                    FROM students s
+                    LEFT JOIN student_fees sf ON s.student_id = sf.student_id
+                    LEFT JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id AND ft.academic_year = %s
+                    WHERE (s.first_name LIKE %s OR s.last_name LIKE %s OR s.student_code LIKE %s)
+                    GROUP BY s.student_id
+                    ORDER BY s.last_name, s.first_name
+                """
+                params = (academic_year, search_pattern, search_pattern, search_pattern)
+
+            results = db.execute_query(query, params, fetch=True)
             return [cls.from_dict(row) for row in results]
         except:
             return []
     
     @classmethod
-    def get_by_class(cls, class_name: str, academic_year: str = None) -> List['Student']:
-        """Get students in a specific class"""
+    def get_by_class(cls, class_name: str, academic_year: str = None, active_only: bool = True) -> List['Student']:
+        """Get students in a specific class; optionally include inactive."""
         if not academic_year:
             academic_year = config.Config.CURRENT_ACADEMIC_YEAR
-        
+
         try:
-            query = Queries.get_students_by_class(class_name)
-            results = db.execute_query(query, (academic_year, class_name), fetch=True)
+            if active_only:
+                query = Queries.get_students_by_class(class_name)
+                results = db.execute_query(query, (academic_year, class_name), fetch=True)
+            else:
+                query = """
+                    SELECT s.*, 
+                           COALESCE(SUM(sf.amount_paid), 0) AS total_paid,
+                           COALESCE(SUM(ft.amount), 0) AS total_due,
+                           COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
+                    FROM students s
+                    LEFT JOIN student_fees sf ON s.student_id = sf.student_id
+                    LEFT JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id AND ft.academic_year = %s
+                    WHERE s.class = %s
+                    GROUP BY s.student_id
+                    ORDER BY s.last_name, s.first_name
+                """
+                results = db.execute_query(query, (academic_year, class_name), fetch=True)
+
             return [cls.from_dict(row) for row in results]
         except:
             return []
@@ -355,20 +436,67 @@ class StudentManager:
         student = Student.get_by_id(student_id)
         if not student:
             return {}
-        
+
+        # Build fee details and compute total_due respecting tuition by class
         fee_details = student.get_fee_details()
-        
+
+        # Determine tuition by class
+        tuition_map = {
+            'nursery': 45000.0,
+            'reception': 45000.0
+        }
+
+        # Default grade tuition
+        grade_tuition = 85000.0
+
+        cls_lower = (student.class_name or '').strip().lower()
+        if any(k in cls_lower for k in ('nursery', 'reception')):
+            tuition_amount = tuition_map.get('nursery')
+        else:
+            tuition_amount = grade_tuition
+
+        # Retrieve fee types for this academic year and adjust tuition fee if present
+        from models.finance import FeeType
+        fee_types = FeeType.get_all()
+        total_due = 0.0
+        adjusted_fee_details = []
+
+        for ft in fee_types:
+            amount = float(ft.amount)
+            if 'tuition' in ft.fee_name.lower():
+                amount = float(tuition_amount)
+
+            # Find paid amount for this fee in fee_details
+            paid = 0.0
+            for fd in fee_details:
+                if fd.get('fee_name') == ft.fee_name:
+                    paid = float(fd.get('paid_amount', 0))
+                    break
+
+            balance = amount - paid
+            adjusted_fee_details.append({
+                'fee_name': ft.fee_name,
+                'expected_amount': amount,
+                'paid_amount': paid,
+                'balance': balance
+            })
+
+            total_due += amount
+
+        total_paid = sum(d['paid_amount'] for d in adjusted_fee_details)
+        balance = total_due - total_paid
+
         summary = {
             'student_name': f"{student.first_name} {student.last_name}",
             'student_code': student.student_code,
             'class': student.class_name,
-            'total_due': student.total_due,
-            'total_paid': student.total_paid,
-            'balance': student.balance,
-            'fee_details': fee_details,
+            'total_due': total_due,
+            'total_paid': total_paid,
+            'balance': balance,
+            'fee_details': adjusted_fee_details,
             'payment_history': StudentManager.get_payment_history(student_id)
         }
-        
+
         return summary
     
     @staticmethod

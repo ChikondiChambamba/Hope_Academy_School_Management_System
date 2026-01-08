@@ -68,6 +68,18 @@ class Config:
         'font_size_small': 10
     }
 
+    # Currency and phone settings
+    CURRENCY_SYMBOL = 'MK '
+    CURRENCY_CODE = 'MWK'
+    CURRENCY_NAME = 'Malawian Kwacha'
+    PHONE_COUNTRY_CODE = '+265'
+
+    # ID generation
+    USE_RANDOM_IDS = False  # Set True to use random/generated IDs for students/teachers
+
+    # Theme mode: 'light' or 'dark'
+    THEME_MODE = 'light'
+
     VALIDATION = {
         'min_student_age': 3,
         'max_student_age': 18
