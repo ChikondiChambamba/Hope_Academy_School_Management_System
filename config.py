@@ -1,6 +1,7 @@
 # Configuration settings
 import os
 from pathlib import Path
+import json
 
 # Base directory
 BASE_DIR = Path(__file__).parent
@@ -50,7 +51,9 @@ class Config:
     AUTHOR = APP_CONFIG.get('author', '')
 
     from datetime import datetime
+    # Loadable setting - can be updated via Preferences UI
     CURRENT_ACADEMIC_YEAR = APP_CONFIG.get('academic_year', str(datetime.now().year))
+    TERM_END_DATE = APP_CONFIG.get('term_end_date', None)
     CURRENT_TERM = APP_CONFIG.get('default_term', 'Term 1')
     TERMS = ['Term 1', 'Term 2', 'Term 3']
 
@@ -115,3 +118,39 @@ class Config:
 
     # Preview/pagination defaults
     PREVIEW_LIMIT = 1000
+
+
+    @staticmethod
+    def _user_settings_path() -> Path:
+        return Path(Config.PATHS.get('data', Config.BASE_DIR / 'data')) / 'user_settings.json'
+
+    @staticmethod
+    def load_user_settings():
+        path = Config._user_settings_path()
+        try:
+            if path.exists():
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if 'CURRENT_ACADEMIC_YEAR' in data:
+                        Config.CURRENT_ACADEMIC_YEAR = data['CURRENT_ACADEMIC_YEAR']
+                    if 'TERM_END_DATE' in data:
+                        Config.TERM_END_DATE = data['TERM_END_DATE']
+        except Exception:
+            pass
+
+    @staticmethod
+    def save_user_settings():
+        path = Config._user_settings_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'CURRENT_ACADEMIC_YEAR': Config.CURRENT_ACADEMIC_YEAR,
+                    'TERM_END_DATE': Config.TERM_END_DATE
+                }, f, indent=2)
+            return True
+        except Exception:
+            return False
+
+# Load user settings at import time
+Config.load_user_settings()

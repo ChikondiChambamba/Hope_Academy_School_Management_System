@@ -458,7 +458,8 @@ class StudentPreviewDialog(BaseDialog):
         # Fetch summary via StudentManager
         try:
             summary = StudentManager.get_student_financial_summary(self.student.student_id)
-        except Exception:
+        except Exception as e:
+            print(f"Error fetching financial summary for student {self.student.student_id}: {e}")
             summary = {}
 
         # Totals header
@@ -1296,6 +1297,18 @@ class PreferencesDialog(BaseDialog):
         self.theme_var = tk.StringVar(value=config.Config.UI['theme'])
         ttk.Combobox(ui_frame, textvariable=self.theme_var, 
                     values=['clam', 'alt', 'default', 'classic'], width=20).grid(row=0, column=1, sticky='w', pady=5)
+
+        # Academic year settings
+        acad_frame = ttk.LabelFrame(self.main_frame, text="Academic Year", padding="10")
+        acad_frame.pack(fill='x', pady=(0, 10))
+
+        ttk.Label(acad_frame, text="Academic Year:").grid(row=0, column=0, sticky='e', padx=(0,10), pady=5)
+        self.acad_var = tk.StringVar(value=getattr(config.Config, 'CURRENT_ACADEMIC_YEAR', ''))
+        ttk.Entry(acad_frame, textvariable=self.acad_var, width=20).grid(row=0, column=1, sticky='w', pady=5)
+
+        ttk.Label(acad_frame, text="Term End Date (YYYY-MM-DD):").grid(row=1, column=0, sticky='e', padx=(0,10), pady=5)
+        self.term_end_var = tk.StringVar(value=getattr(config.Config, 'TERM_END_DATE', '') or '')
+        ttk.Entry(acad_frame, textvariable=self.term_end_var, width=20).grid(row=1, column=1, sticky='w', pady=5)
         
         # Create button box
         self.create_button_box(self.main_frame)
@@ -1308,6 +1321,17 @@ class PreferencesDialog(BaseDialog):
         config.Config.DB_CONFIG['password'] = self.pass_var.get()
         config.Config.DB_CONFIG['database'] = self.db_var.get()
         config.Config.UI['theme'] = self.theme_var.get()
+        # Academic year and term
+        new_acad = self.acad_var.get().strip()
+        if new_acad:
+            config.Config.CURRENT_ACADEMIC_YEAR = new_acad
+        term_end = self.term_end_var.get().strip()
+        config.Config.TERM_END_DATE = term_end if term_end else None
+        # Persist user settings
+        try:
+            config.Config.save_user_settings()
+        except Exception:
+            pass
         
         # Save to file (would need implementation)
         # self.save_config_to_file()

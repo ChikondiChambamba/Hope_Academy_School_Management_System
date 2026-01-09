@@ -844,6 +844,8 @@ class FinanceTab:
                     s.class,
                     COALESCE(SUM(
                         CASE
+                            WHEN sfe.exemption_id IS NOT NULL THEN 0
+                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
                             WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
                             WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
                             ELSE ft.amount
@@ -852,6 +854,8 @@ class FinanceTab:
                     COALESCE(SUM(sf.amount_paid), 0) as amount_paid,
                     COALESCE(SUM(
                         CASE
+                            WHEN sfe.exemption_id IS NOT NULL THEN 0
+                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
                             WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
                             WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
                             ELSE ft.amount
@@ -859,6 +863,7 @@ class FinanceTab:
                     ), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
                 FROM students s
                 CROSS JOIN fee_types ft
+                LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
                 LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
                 WHERE s.is_active = 1 AND ft.academic_year = '{acad_year}'
                 GROUP BY s.student_id, s.first_name, s.last_name, s.class
@@ -914,11 +919,28 @@ class FinanceTab:
                     s.student_id,
                     CONCAT(s.first_name, ' ', s.last_name) as student_name,
                     s.class,
-                    COALESCE(SUM(ft.amount), 0) as total_fees,
+                    COALESCE(SUM(
+                        CASE
+                            WHEN sfe.exemption_id IS NOT NULL THEN 0
+                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                            ELSE ft.amount
+                        END
+                    ), 0) as total_fees,
                     COALESCE(SUM(sf.amount_paid), 0) as amount_paid,
-                    COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
+                    COALESCE(SUM(
+                        CASE
+                            WHEN sfe.exemption_id IS NOT NULL THEN 0
+                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                            ELSE ft.amount
+                        END
+                    ), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
                 FROM students s
                 CROSS JOIN fee_types ft
+                LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
                 LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
                 WHERE s.is_active = 1 AND ft.academic_year = %s
             """

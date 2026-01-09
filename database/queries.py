@@ -99,9 +99,9 @@ class Queries:
             ) - COALESCE(SUM(sf.amount_paid), 0) AS balance,
             MAX(sf.payment_date) AS last_payment
         FROM fee_types ft
-        LEFT JOIN students s ON 1=1
-        LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = %s AND sfe.fee_type_id = ft.fee_type_id
-        LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.student_id = %s
+        LEFT JOIN students s ON s.student_id = %s
+        LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
+        LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.student_id = s.student_id
         WHERE ft.academic_year = %s
         GROUP BY ft.fee_type_id, ft.fee_name, ft.amount
         ORDER BY ft.fee_name

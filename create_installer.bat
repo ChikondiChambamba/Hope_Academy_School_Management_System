@@ -36,13 +36,13 @@ if not exist "LICENSE.txt" (
     echo END USER LICENSE AGREEMENT
     echo.
     echo 1. GRANT OF LICENSE
-    echo This software is licensed, not sold. Greenwood Primary School grants you a 
+    echo This software is licensed, not sold. Hope Academy Primary School grants you a 
     echo non-exclusive license to use this software for educational and administrative 
     echo purposes within your school.
     echo.
     echo 2. RESTRICTIONS
     echo You may not distribute, sell, or modify this software without written 
-    echo permission from Greenwood Primary School.
+    echo permission from Hope Academy Primary School.
     echo.
     echo 3. TERMINATION
     echo This license is effective until terminated. Your rights under this license 
