@@ -3,7 +3,7 @@
 Financial models for fee and expense management
 """
 from dataclasses import dataclass, asdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional, List, Dict, Any
 from decimal import Decimal
 import config
@@ -242,6 +242,43 @@ class FeePayment:
                 return False, f"Database error: {msg}"
 
         return False, "Database error: failed to generate unique receipt after retries"
+
+    def update(self) -> tuple[bool, str]:
+        """Update an existing fee payment record"""
+        # Ensure we have an id
+        if not self.fee_id:
+            return False, "Payment ID is missing for update"
+
+        is_valid, message = self.validate()
+        if not is_valid:
+            return False, message
+
+        try:
+            query = """
+                UPDATE student_fees SET
+                  student_id = %s,
+                  fee_type_id = %s,
+                  amount_paid = %s,
+                  payment_date = %s,
+                  payment_method = %s,
+                  receipt_number = %s,
+                  description = %s
+                WHERE fee_id = %s
+            """
+            params = (
+                self.student_id,
+                self.fee_type_id,
+                self.amount_paid,
+                self.payment_date,
+                self.payment_method,
+                self.receipt_number,
+                self.description,
+                self.fee_id
+            )
+            db.execute_query(query, params)
+            return True, "Payment updated successfully"
+        except Exception as e:
+            return False, f"Database error: {str(e)}"
     
     def generate_receipt_number(self) -> str:
         """Generate unique receipt number"""

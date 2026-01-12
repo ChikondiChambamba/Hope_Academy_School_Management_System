@@ -727,12 +727,14 @@ class ExpenseCategoryDialog(BaseDialog):
 
 
 class FeePaymentDialog(BaseDialog):
-    """Dialog for recording fee payments"""
-    
-    def __init__(self, parent, title, student, fee_summary):
+    """Dialog for recording or editing fee payments"""
+
+    def __init__(self, parent, title, student, fee_summary, payment=None):
         super().__init__(parent, title, 500, 480)
         self.student = student
         self.fee_summary = fee_summary
+        # Optional DB row/dict when editing an existing payment
+        self.payment = payment
         self.setup_ui()
     
     def setup_ui(self):
@@ -786,8 +788,23 @@ class FeePaymentDialog(BaseDialog):
 
         self.fee_combo = ttk.Combobox(payment_frame, textvariable=self.fee_type_var, values=fee_choices, width=40)
         self.fee_combo.grid(row=0, column=1, sticky='w', pady=5)
+        # If editing a payment, try to select the matching fee type; otherwise pick first
         if fee_choices:
-            self.fee_combo.current(0)
+            if getattr(self, 'payment', None):
+                try:
+                    target_fee = self.payment.get('fee_name') or self.payment.get('fee_type')
+                    found = False
+                    for k, ft in self._fee_type_lookup.items():
+                        if ft.fee_name == target_fee:
+                            self.fee_combo.set(k)
+                            found = True
+                            break
+                    if not found:
+                        self.fee_combo.current(0)
+                except Exception:
+                    self.fee_combo.current(0)
+            else:
+                self.fee_combo.current(0)
             # prefill amount for the selected fee
             self.on_fee_selected()
         # bind selection to auto-fill amount
@@ -821,7 +838,8 @@ class FeePaymentDialog(BaseDialog):
         btn_frame = ttk.Frame(payment_frame)
         btn_frame.grid(row=5, column=0, columnspan=2, pady=(10, 0))
 
-        ttk.Button(btn_frame, text="Record Payment", command=self.on_ok).pack(side='left', padx=5)
+        self.record_button = ttk.Button(btn_frame, text="Record Payment", command=self.on_ok)
+        self.record_button.pack(side='left', padx=5)
         ttk.Button(btn_frame, text="Cancel", command=self.on_cancel).pack(side='left')
 
         # Description (moved below buttons)
@@ -831,6 +849,48 @@ class FeePaymentDialog(BaseDialog):
 
         # Create standard dialog button box as well (OK/Cancel) for compatibility
         self.create_button_box(self.main_frame)
+
+        # If editing, prefill values from provided payment row/dict
+        if getattr(self, 'payment', None):
+            try:
+                # Amount
+                amt = self.payment.get('amount_paid') or self.payment.get('amount') or 0
+                try:
+                    famt = float(amt)
+                    self.amount_var.set(str(int(famt) if famt.is_integer() else f"{famt:.2f}"))
+                except Exception:
+                    self.amount_var.set(str(amt))
+            except Exception:
+                pass
+
+            # Date
+            try:
+                pd = self.payment.get('payment_date')
+                if pd:
+                    if isinstance(pd, str):
+                        self.date_var.set(pd.split('T')[0])
+                    else:
+                        self.date_var.set(pd.strftime('%Y-%m-%d'))
+            except Exception:
+                pass
+
+            # Method, receipt, description
+            try:
+                if self.payment.get('payment_method'):
+                    self.method_var.set(self.payment.get('payment_method'))
+                if self.payment.get('receipt_number'):
+                    self.receipt_entry.delete(0, tk.END)
+                    self.receipt_entry.insert(0, self.payment.get('receipt_number'))
+                if self.payment.get('description'):
+                    self.desc_text.delete('1.0', tk.END)
+                    self.desc_text.insert('1.0', self.payment.get('description'))
+            except Exception:
+                pass
+
+            try:
+                self.record_button.config(text='Update Payment')
+            except Exception:
+                pass
 
     def on_fee_selected(self):
         """Auto-fill amount when a fee type is selected; handle tuition overrides by class."""
@@ -905,7 +965,7 @@ class FeePaymentDialog(BaseDialog):
                 messagebox.showerror("Error", "Fee type not found")
                 return
 
-            # Create payment record
+            # Create payment record (or update existing)
             fee_payment = FeePayment(
                 student_id=self.student.student_id,
                 fee_type_id=fee_type.fee_type_id,
@@ -916,7 +976,15 @@ class FeePaymentDialog(BaseDialog):
                 description=self.desc_text.get('1.0', tk.END).strip()
             )
 
-            success, message = fee_payment.save()
+            # If editing an existing payment, set its id and call update()
+            if getattr(self, 'payment', None) and self.payment.get('fee_id'):
+                try:
+                    fee_payment.fee_id = int(self.payment.get('fee_id'))
+                except Exception:
+                    fee_payment.fee_id = self.payment.get('fee_id')
+                success, message = fee_payment.update()
+            else:
+                success, message = fee_payment.save()
 
             if success:
                 # Notify application to refresh totals and views
