@@ -19,17 +19,20 @@ class MainWindow:
         
         # Create menu bar
         self.create_menu_bar()
-        
         # Create main container
         self.main_container = ttk.Frame(self.root)
         self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # Create notebook for tabs
+
+        # Create tabs based on current role (roles managed in Preferences)
         self.create_tabs()
         # Bind application-wide events
         try:
             # When a payment is recorded in any dialog, refresh all tabs
             self.root.bind("<<PaymentRecorded>>", lambda e: self.refresh_all())
+            # Recreate tabs when user role changes
+            self.root.bind("<<UserRoleChanged>>", lambda e: self.on_user_role_changed())
+            # Apply preferences changes (theme, db settings, academic year) immediately
+            self.root.bind("<<PreferencesChanged>>", lambda e: self.apply_preferences())
         except Exception:
             pass
         
@@ -121,12 +124,22 @@ class MainWindow:
         file_menu.add_command(label="Exit", 
                              command=self.root.quit,
                              accelerator="Ctrl+Q")
+        file_menu.add_command(label="Login",
+                 command=self.show_login,
+                 accelerator="Ctrl+I")
+        file_menu.add_command(label="Logout",
+                 command=self.logout,
+                 accelerator="Ctrl+L")
         
         # Edit menu
         edit_menu = Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Edit", menu=edit_menu)
         edit_menu.add_command(label="Preferences", 
                              command=self.open_preferences)
+        # User management
+        edit_menu.add_command(label="Manage Users",
+                             command=self.open_user_manager,
+                             accelerator="Ctrl+U")
         
         # View menu
         view_menu = Menu(menubar, tearoff=0)
@@ -136,15 +149,24 @@ class MainWindow:
                              accelerator="F5")
         view_menu.add_separator()
         
-        # Add checkbuttons for tabs
+        # Add checkbuttons for tabs based on permissions
         self.tab_vars = {}
-        for i, tab_name in enumerate(["Dashboard", "Students", "Teachers", 
-                                      "Finance", "Inventory", "Attendance", "Reports"]):
-            var = tk.BooleanVar(value=True)
-            self.tab_vars[tab_name] = var
-            view_menu.add_checkbutton(label=tab_name, 
-                                      variable=var,
-                                      command=lambda t=tab_name: self.toggle_tab(t))
+        tabs_map = [
+            ('dashboard', 'Dashboard'),
+            ('students', 'Students'),
+            ('teachers', 'Teachers'),
+            ('finance', 'Finance'),
+            ('inventory', 'Inventory'),
+            ('attendance', 'Attendance'),
+            ('reports', 'Reports')
+        ]
+        for feature, tab_name in tabs_map:
+            if config.Config.has_permission(feature):
+                var = tk.BooleanVar(value=True)
+                self.tab_vars[tab_name] = var
+                view_menu.add_checkbutton(label=tab_name,
+                                          variable=var,
+                                          command=lambda t=tab_name: self.toggle_tab(t))
         
         # Tools menu
         tools_menu = Menu(menubar, tearoff=0)
@@ -161,25 +183,26 @@ class MainWindow:
         reports_menu = Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Reports", menu=reports_menu)
         
-        # Student reports submenu
+        # Student reports submenu (non-financial)
         student_reports = Menu(reports_menu, tearoff=0)
         reports_menu.add_cascade(label="Student Reports", menu=student_reports)
-        student_reports.add_command(label="Student List", 
-                                   command=self.generate_student_list)
-        student_reports.add_command(label="Student Fees Report", 
-                                   command=self.generate_student_fees_report)
-        student_reports.add_command(label="Attendance Report", 
-                                   command=self.generate_attendance_report)
+        student_reports.add_command(label="Student List",
+                       command=self.generate_student_list)
+        student_reports.add_command(label="Attendance Report",
+                       command=self.generate_attendance_report)
         
-        # Financial reports submenu
-        financial_reports = Menu(reports_menu, tearoff=0)
-        reports_menu.add_cascade(label="Financial Reports", menu=financial_reports)
-        financial_reports.add_command(label="Fee Collection Report", 
-                                     command=self.generate_fee_collection_report)
-        financial_reports.add_command(label="Expense Report", 
-                                     command=self.generate_expense_report)
-        financial_reports.add_command(label="Financial Summary", 
-                                     command=self.generate_financial_summary)
+        # Financial reports submenu (only for roles with permission)
+        if config.Config.has_permission('financial_reports'):
+            financial_reports = Menu(reports_menu, tearoff=0)
+            reports_menu.add_cascade(label="Financial Reports", menu=financial_reports)
+            financial_reports.add_command(label="Student Fees Report",
+                                         command=self.generate_student_fees_report)
+            financial_reports.add_command(label="Fee Collection Report",
+                                         command=self.generate_fee_collection_report)
+            financial_reports.add_command(label="Expense Report",
+                                         command=self.generate_expense_report)
+            financial_reports.add_command(label="Financial Summary",
+                                         command=self.generate_financial_summary)
         
         # Inventory reports submenu
         inventory_reports = Menu(reports_menu, tearoff=0)
@@ -207,7 +230,84 @@ class MainWindow:
         self.root.bind('<Control-b>', lambda e: self.backup_database())
         self.root.bind('<Control-p>', lambda e: self.print_data())
         self.root.bind('<Control-q>', lambda e: self.root.quit())
+        self.root.bind('<Control-l>', lambda e: self.logout())
+        self.root.bind('<Control-u>', lambda e: self.open_user_manager())
         self.root.bind('<F5>', lambda e: self.refresh_all())
+
+    def logout(self):
+        """Logout current user and refresh UI (roles managed in Preferences)."""
+        try:
+            # Clear current user
+            try:
+                config.Config.CURRENT_USER = None
+                # keep CURRENT_USER_ROLE as-is until new login; persist removal of CURRENT_USER
+                config.Config.save_user_settings()
+            except Exception:
+                pass
+            # Recreate tabs to reflect that no user is selected (role remains as in Preferences)
+            try:
+                self.on_user_role_changed()
+            except Exception:
+                pass
+        except Exception as e:
+            messagebox.showerror('Logout Failed', str(e))
+
+    def on_user_role_changed(self):
+        """Handler for role change events - recreate tabs immediately."""
+        try:
+            # Destroy existing notebook and recreate tabs using new role
+            if hasattr(self, 'notebook'):
+                try:
+                    self.notebook.destroy()
+                except Exception:
+                    pass
+            self.create_tabs()
+            user = getattr(config.Config, 'CURRENT_USER', None)
+            role = getattr(config.Config, 'CURRENT_USER_ROLE', None)
+            if user:
+                self.update_status(f"Logged in as {user} ({role})")
+            else:
+                self.update_status(f"Role: {role}")
+        except Exception:
+            pass
+
+    def apply_preferences(self):
+        """Apply preferences changed at runtime without restart"""
+        try:
+            # Reapply styles (theme, fonts, colors)
+            self.setup_styles()
+            # Refresh data in all tabs
+            self.refresh_all()
+            # Update DB connection indicator
+            self.update_database_status()
+            self.update_status("Preferences applied")
+        except Exception:
+            pass
+
+    def show_login(self):
+        """Show the login dialog and create tabs based on selected user."""
+        from UI.dialogs import LoginDialog
+        dialog = LoginDialog(self.root)
+        dialog.show()
+        # If user selected a username, dialog sets Config.CURRENT_USER and role.
+        # Ensure tabs are created (use current role from config)
+        try:
+            # Remove any existing notebook (if present)
+            if hasattr(self, 'notebook'):
+                try:
+                    self.notebook.destroy()
+                except Exception:
+                    pass
+            self.create_tabs()
+            # Update status to indicate logged-in user
+            user = getattr(config.Config, 'CURRENT_USER', None)
+            role = getattr(config.Config, 'CURRENT_USER_ROLE', None)
+            if user:
+                self.update_status(f"Logged in as {user} ({role})")
+            else:
+                self.update_status(f"Role: {role}")
+        except Exception:
+            self.create_tabs()
     
     def create_tabs(self):
         """Create main tabs for different sections"""
@@ -226,15 +326,21 @@ class MainWindow:
             from UI.inventory import InventoryTab
             from UI.attendance import AttendanceTab
             from UI.reports import ReportsTab
-
-            # Create tab instances
-            self.tabs['Dashboard'] = DashboardTab(self.notebook)
-            self.tabs['Students'] = StudentsTab(self.notebook)
-            self.tabs['Teachers'] = TeachersTab(self.notebook)
-            self.tabs['Finance'] = FinanceTab(self.notebook)
-            self.tabs['Inventory'] = InventoryTab(self.notebook)
-            self.tabs['Attendance'] = AttendanceTab(self.notebook)
-            self.tabs['Reports'] = ReportsTab(self.notebook)
+            # Create tab instances based on permissions
+            if config.Config.has_permission('dashboard'):
+                self.tabs['Dashboard'] = DashboardTab(self.notebook, role=getattr(config.Config, 'CURRENT_USER_ROLE', ''))
+            if config.Config.has_permission('students'):
+                self.tabs['Students'] = StudentsTab(self.notebook)
+            if config.Config.has_permission('teachers'):
+                self.tabs['Teachers'] = TeachersTab(self.notebook)
+            if config.Config.has_permission('finance'):
+                self.tabs['Finance'] = FinanceTab(self.notebook)
+            if config.Config.has_permission('inventory'):
+                self.tabs['Inventory'] = InventoryTab(self.notebook)
+            if config.Config.has_permission('attendance'):
+                self.tabs['Attendance'] = AttendanceTab(self.notebook)
+            if config.Config.has_permission('reports'):
+                self.tabs['Reports'] = ReportsTab(self.notebook)
 
             # Add tabs to notebook
             for name, tab in self.tabs.items():
@@ -432,6 +538,21 @@ class MainWindow:
         dialog = PreferencesDialog(self.root)
         dialog.show()
         self.update_status("Preferences updated")
+
+    def open_user_manager(self):
+        """Open the user manager dialog to add/edit/remove users and roles."""
+        try:
+            from UI.dialogs import UsersDialog
+            dialog = UsersDialog(self.root)
+            dialog.show()
+            # reload tabs in case current role/user changed
+            try:
+                self.on_user_role_changed()
+            except Exception:
+                pass
+            self.update_status("User list updated")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open user manager: {e}")
     
     def refresh_all(self):
         """Refresh all tabs"""

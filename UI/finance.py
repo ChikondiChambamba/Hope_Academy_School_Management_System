@@ -142,6 +142,8 @@ class FinanceTab:
         
         ttk.Button(summary_frame, text="Refresh", command=self.load_recent_payments).pack(side='right', padx=5)
         ttk.Button(summary_frame, text="Delete Selected", command=self.delete_payment).pack(side='right', padx=5)
+        # Setup payments context menu (edit/delete)
+        self.setup_payments_context_menu()
     
     def setup_student_balances_tab(self):
         """Setup student balances tab"""
@@ -217,8 +219,12 @@ class FinanceTab:
     def setup_payments_context_menu(self):
         """Setup context menu for payments tree"""
         self.payments_menu = tk.Menu(self.frame, tearoff=0)
+        self.payments_menu.add_command(label="Edit Payment", command=self.edit_payment)
+        self.payments_menu.add_separator()
         self.payments_menu.add_command(label="Delete Payment", command=self.delete_payment)
         self.payments_tree.bind("<Button-3>", self.show_payments_context_menu)
+        # Double-click to edit
+        self.payments_tree.bind('<Double-1>', lambda e: self.edit_payment())
 
     def show_payments_context_menu(self, event):
         item = self.payments_tree.identify_row(event.y)
@@ -242,6 +248,60 @@ class FinanceTab:
             self.load_recent_payments()
             self.load_student_balances()
             self.load_financial_summary()
+        except Exception as e:
+            messagebox.showerror('Error', str(e))
+
+    def edit_payment(self):
+        """Edit selected payment using the standard FeePaymentDialog in edit mode"""
+        selected = self.payments_tree.selection()
+        if not selected:
+            messagebox.showwarning('Select', 'Select a payment to edit')
+            return
+        item = self.payments_tree.item(selected[0], 'values')
+        fee_id = item[0]
+        try:
+            query = """
+                SELECT sf.*, s.first_name, s.last_name, s.class as class_name, s.student_code, ft.fee_name
+                FROM student_fees sf
+                JOIN students s ON sf.student_id = s.student_id
+                JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id
+                WHERE sf.fee_id = %s
+            """
+            rows = db.execute_query(query, (fee_id,), fetch=True)
+            if not rows:
+                messagebox.showerror('Error', 'Payment record not found')
+                return
+            row = rows[0]
+
+            # Get a Student object if available, otherwise create a minimal holder
+            try:
+                from models.student import Student
+                student = Student.get_by_id(row['student_id'])
+            except Exception:
+                class _S: pass
+                student = _S()
+                student.first_name = row.get('first_name', '')
+                student.last_name = row.get('last_name', '')
+                student.class_name = row.get('class_name', '')
+                student.student_code = row.get('student_code', '')
+                student.student_id = row.get('student_id')
+
+            # minimal fee summary (dialog uses it only for display)
+            fee_summary = {
+                'total_due': 0,
+                'total_paid': 0,
+                'total_balance': 0
+            }
+
+            from UI.dialogs import FeePaymentDialog
+            dlg = FeePaymentDialog(self.frame, f"Edit Payment - {student.first_name} {student.last_name}", student, fee_summary, payment=row)
+            dlg.show()
+
+            if getattr(dlg, 'result', False):
+                self.load_recent_payments()
+                self.load_student_balances()
+                self.load_financial_summary()
+
         except Exception as e:
             messagebox.showerror('Error', str(e))
     
@@ -350,6 +410,8 @@ class FinanceTab:
         ttk.Label(summary_frame, textvariable=self.month_expense_var, font=('Arial', 12, 'bold')).pack(side='left', padx=5)
         
         ttk.Button(summary_frame, text="Refresh", command=self.load_recent_expenses).pack(side='right', padx=5)
+        # Setup right-click context menu for expenses
+        self.setup_expenses_context_menu()
     
     def setup_financial_summary_tab(self):
         """Setup financial summary tab"""
@@ -1052,6 +1114,112 @@ class FinanceTab:
                 
         except Exception as e:
             print(f"Error loading expenses: {e}")
+
+    def setup_expenses_context_menu(self):
+        """Setup context menu for expenses list"""
+        self.expenses_menu = tk.Menu(self.frame, tearoff=0)
+        self.expenses_menu.add_command(label='Edit Expense', command=self.edit_expense)
+        self.expenses_menu.add_separator()
+        self.expenses_menu.add_command(label='Delete Expense', command=self.delete_expense)
+        self.expenses_tree.bind('<Button-3>', self.show_expenses_context_menu)
+        self.expenses_tree.bind('<Double-1>', lambda e: self.edit_expense())
+
+    def show_expenses_context_menu(self, event):
+        item = self.expenses_tree.identify_row(event.y)
+        if item:
+            self.expenses_tree.selection_set(item)
+            self.expenses_menu.post(event.x_root, event.y_root)
+
+    def delete_expense(self):
+        sel = self.expenses_tree.selection()
+        if not sel:
+            messagebox.showwarning('Select', 'Select an expense to delete')
+            return
+        item = self.expenses_tree.item(sel[0], 'values')
+        expense_id = item[0]
+        if not messagebox.askyesno('Confirm', 'Permanently delete selected expense?'):
+            return
+        try:
+            db.execute_query('DELETE FROM expenses WHERE expense_id=%s', (expense_id,))
+            messagebox.showinfo('Success', 'Expense deleted')
+            self.load_recent_expenses()
+            self.load_financial_summary()
+        except Exception as e:
+            messagebox.showerror('Error', str(e))
+
+    def edit_expense(self):
+        sel = self.expenses_tree.selection()
+        if not sel:
+            messagebox.showwarning('Select', 'Select an expense to edit')
+            return
+        item = self.expenses_tree.item(sel[0], 'values')
+        expense_id = item[0]
+        try:
+            q = 'SELECT * FROM expenses WHERE expense_id=%s'
+            rows = db.execute_query(q, (expense_id,), fetch=True)
+            if not rows:
+                messagebox.showerror('Error', 'Expense not found')
+                return
+            row = rows[0]
+
+            dlg = tk.Toplevel(self.frame)
+            dlg.title('Edit Expense')
+            dlg.transient(self.frame)
+            dlg.grab_set()
+
+            ttk.Label(dlg, text='Date (YYYY-MM-DD):').grid(row=0, column=0, sticky='e', padx=6, pady=4)
+            date_var = tk.StringVar(value=str(row.get('expense_date') or date.today().strftime('%Y-%m-%d')))
+            ttk.Entry(dlg, textvariable=date_var, width=25).grid(row=0, column=1, padx=6, pady=4, sticky='w')
+
+            ttk.Label(dlg, text='Description:').grid(row=1, column=0, sticky='ne', padx=6, pady=4)
+            desc_txt = tk.Text(dlg, width=40, height=4)
+            desc_txt.grid(row=1, column=1, padx=6, pady=4)
+            if row.get('description'):
+                desc_txt.insert('1.0', row.get('description'))
+
+            ttk.Label(dlg, text='Category:').grid(row=2, column=0, sticky='e', padx=6, pady=4)
+            category_var = tk.StringVar(value=row.get('category') or '')
+            ttk.Entry(dlg, textvariable=category_var, width=30).grid(row=2, column=1, padx=6, pady=4, sticky='w')
+
+            ttk.Label(dlg, text='Amount:').grid(row=3, column=0, sticky='e', padx=6, pady=4)
+            amount_var = tk.StringVar(value=str(row.get('amount') or '0'))
+            ttk.Entry(dlg, textvariable=amount_var, width=20).grid(row=3, column=1, padx=6, pady=4, sticky='w')
+
+            ttk.Label(dlg, text='Method:').grid(row=4, column=0, sticky='e', padx=6, pady=4)
+            method_var = tk.StringVar(value=row.get('payment_method') or 'Cash')
+            ttk.Combobox(dlg, textvariable=method_var, values=['Cash','M-Pesa','Bank Transfer','Check','Other'], state='readonly', width=20).grid(row=4, column=1, padx=6, pady=4, sticky='w')
+
+            ttk.Label(dlg, text='Receipt No:').grid(row=5, column=0, sticky='e', padx=6, pady=4)
+            receipt_var = tk.StringVar(value=row.get('receipt_number') or '')
+            ttk.Entry(dlg, textvariable=receipt_var, width=30).grid(row=5, column=1, padx=6, pady=4, sticky='w')
+
+            def on_save():
+                try:
+                    pdate = date_var.get().strip()
+                    desc = desc_txt.get('1.0', 'end').strip()
+                    cat = category_var.get().strip() or None
+                    amt = parse_currency(amount_var.get())
+                    mth = method_var.get().strip() or 'Cash'
+                    rno = receipt_var.get().strip() or None
+
+                    db.execute_query(
+                        """UPDATE expenses SET expense_date=%s, description=%s, category=%s, amount=%s, payment_method=%s, receipt_number=%s WHERE expense_id=%s""",
+                        (pdate, desc, cat, amt, mth, rno, expense_id)
+                    )
+                    messagebox.showinfo('Success', 'Expense updated')
+                    dlg.destroy()
+                    self.load_recent_expenses()
+                    self.load_financial_summary()
+                except Exception as e:
+                    messagebox.showerror('Error', str(e))
+
+            btns = ttk.Frame(dlg)
+            btns.grid(row=6, column=0, columnspan=2, pady=8)
+            ttk.Button(btns, text='Save', command=on_save).pack(side='left', padx=6)
+            ttk.Button(btns, text='Cancel', command=dlg.destroy).pack(side='left', padx=6)
+
+        except Exception as e:
+            messagebox.showerror('Error', str(e))
     
     def load_financial_summary(self):
         """Load financial summary"""
@@ -1254,6 +1422,8 @@ class FinanceTab:
     
     def record_payment(self):
         """Record a fee payment"""
+        import traceback
+        # record_payment invoked
         try:
             # Validate inputs
             if not self.student_var.get():
@@ -1287,7 +1457,24 @@ class FinanceTab:
                     messagebox.showerror("Error", "Student not found. Please select from dropdown.")
                     return
             
-            fee_type_id = int(self.fee_type_var.get().split(':')[0])
+            # Parse fee_type_id safely
+            try:
+                fee_type_id = int(self.fee_type_var.get().split(':')[0])
+            except Exception:
+                # try to resolve by fee name
+                sel = self.fee_type_var.get()
+                fee_name = sel.split(':', 1)[-1].strip() if ':' in sel else sel
+                try:
+                    q = "SELECT fee_type_id FROM fee_types WHERE fee_name = %s LIMIT 1"
+                    res = db.execute_query(q, (fee_name,), fetch=True)
+                    if res:
+                        fee_type_id = res[0]['fee_type_id']
+                    else:
+                        messagebox.showerror('Error', 'Fee type not found. Please select from dropdown.')
+                        return
+                except Exception as e:
+                    messagebox.showerror('Error', f'Failed to resolve fee type: {e}')
+                    return
             
             # Get description
             description = self.description_text.get("1.0", "end-1c").strip()
@@ -1343,7 +1530,9 @@ class FinanceTab:
             self.load_financial_summary()
             
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to record payment: {str(e)}")
+            tb = traceback.format_exc()
+            print('record_payment error:', tb)
+            messagebox.showerror("Error", f"Failed to record payment: {str(e)}\n\nSee console for traceback.")
     
     def clear_payment_form(self):
         """Clear payment form"""

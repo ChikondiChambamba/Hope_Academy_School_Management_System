@@ -19,6 +19,7 @@ class StudentsTab:
     
     def setup_ui(self):
         """Setup students tab UI"""
+        role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
         # Main container
         main_container = ttk.Frame(self.frame)
         main_container.pack(fill='both', expand=True, padx=10, pady=10)
@@ -97,9 +98,17 @@ class StudentsTab:
         )
         self.fee_button.pack(side='left', padx=5)
 
+        # If role is Headteacher, disable fee actions
+        if role == 'Headteacher':
+            try:
+                self.fee_button.state(['disabled'])
+            except Exception:
+                self.fee_button.config(state='disabled')
+
         # Initially disable action buttons until a class is selected
-        for btn in (self.add_button, self.edit_button, self.delete_button, self.fee_button):
+        for btn in (self.add_button, self.edit_button, self.delete_button):
             btn.state(['disabled'])
+        # fee_button already handled above (may be disabled for Headteacher)
         
         # Right side search
         right_frame = ttk.Frame(controls_frame)
@@ -170,11 +179,15 @@ class StudentsTab:
         self.students_frame = ttk.Frame(notebook)
         notebook.add(self.students_frame, text="Student List")
         self.setup_students_list()
-        
-        # Fee Balances Tab
+        # Fee Balances Tab: hide for Headteacher role
+        role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
         self.balances_frame = ttk.Frame(notebook)
-        notebook.add(self.balances_frame, text="Fee Balances")
-        self.setup_fee_balances()
+        if role != 'Headteacher':
+            notebook.add(self.balances_frame, text="Fee Balances")
+            self.setup_fee_balances()
+        else:
+            # Keep a placeholder frame so refresh_data calls won't fail
+            self.balances_frame = ttk.Frame(notebook)
         
         # Status label
         self.status_label = ttk.Label(main_container, text="")
@@ -186,8 +199,13 @@ class StudentsTab:
         tree_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
         # Define columns
-        columns = ('ID', 'Code', 'First Name', 'Last Name', 'Class', 
-                  'Parent', 'Phone', 'Enrollment Date', 'Balance', 'Status')
+        role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
+        columns = ['ID', 'Code', 'First Name', 'Last Name', 'Class', 'Parent', 'Phone', 'Enrollment Date', 'Status']
+        # Show financial Balance column to roles other than Headteacher
+        if role != 'Headteacher':
+            # insert Balance before Status
+            columns.insert(-1, 'Balance')
+        columns = tuple(columns)
         
         # Create treeview
         self.students_tree = ttk.Treeview(
@@ -367,26 +385,47 @@ class StudentsTab:
                     balance_display = f"{format_currency(balance)} ✗"
                 else:
                     balance_display = f"{format_currency(abs(balance))} ✓"
-                
-                self.students_tree.insert('', 'end', values=(
-                    student.student_id,
-                    student.student_code,
-                    student.first_name,
-                    student.last_name,
-                    student.class_name,
-                    student.parent_name or '',
-                    student.parent_phone or '',
-                    student.enrollment_date.strftime('%Y-%m-%d') if student.enrollment_date else '',
-                    balance_display,
-                    status
-                ))
+                # Build values respecting whether Balance column is present
+                role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
+                if role != 'Headteacher':
+                    values = (
+                        student.student_id,
+                        student.student_code,
+                        student.first_name,
+                        student.last_name,
+                        student.class_name,
+                        student.parent_name or '',
+                        student.parent_phone or '',
+                        student.enrollment_date.strftime('%Y-%m-%d') if student.enrollment_date else '',
+                        balance_display,
+                        status
+                    )
+                else:
+                    # Headteacher: omit balance
+                    values = (
+                        student.student_id,
+                        student.student_code,
+                        student.first_name,
+                        student.last_name,
+                        student.class_name,
+                        student.parent_name or '',
+                        student.parent_phone or '',
+                        student.enrollment_date.strftime('%Y-%m-%d') if student.enrollment_date else '',
+                        status
+                    )
+
+                self.students_tree.insert('', 'end', values=values)
             
             # Update status
             count = len(students)
             self.status_label.config(text=f"Total Students: {count}")
             
-            # Load fee balances
-            self.load_fee_balances()
+            # Load fee balances if the balances tree was created (not shown for Headteacher)
+            if hasattr(self, 'balances_tree'):
+                try:
+                    self.load_fee_balances()
+                except Exception:
+                    pass
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load students: {str(e)}")
@@ -466,19 +505,34 @@ class StudentsTab:
                 status = "Active" if student.is_active else "Inactive"
                 balance = student.balance
                 balance_display = f"{format_currency(balance)} ✗" if balance > 0 else f"{format_currency(abs(balance))} ✓"
-                
-                self.students_tree.insert('', 'end', values=(
-                    student.student_id,
-                    student.student_code,
-                    student.first_name,
-                    student.last_name,
-                    student.class_name,
-                    student.parent_name or '',
-                    student.parent_phone or '',
-                    student.enrollment_date.strftime('%Y-%m-%d') if student.enrollment_date else '',
-                    balance_display,
-                    status
-                ))
+                role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
+                if role != 'Headteacher':
+                    values = (
+                        student.student_id,
+                        student.student_code,
+                        student.first_name,
+                        student.last_name,
+                        student.class_name,
+                        student.parent_name or '',
+                        student.parent_phone or '',
+                        student.enrollment_date.strftime('%Y-%m-%d') if student.enrollment_date else '',
+                        balance_display,
+                        status
+                    )
+                else:
+                    values = (
+                        student.student_id,
+                        student.student_code,
+                        student.first_name,
+                        student.last_name,
+                        student.class_name,
+                        student.parent_name or '',
+                        student.parent_phone or '',
+                        student.enrollment_date.strftime('%Y-%m-%d') if student.enrollment_date else '',
+                        status
+                    )
+
+                self.students_tree.insert('', 'end', values=values)
             
             # Update status
             count = len(students)
@@ -509,19 +563,34 @@ class StudentsTab:
                 status = "Active" if student.is_active else "Inactive"
                 balance = student.balance
                 balance_display = f"{format_currency(balance)} ✗" if balance > 0 else f"{format_currency(abs(balance))} ✓"
-                
-                self.students_tree.insert('', 'end', values=(
-                    student.student_id,
-                    student.student_code,
-                    student.first_name,
-                    student.last_name,
-                    student.class_name,
-                    student.parent_name or '',
-                    student.parent_phone or '',
-                    student.enrollment_date.strftime('%Y-%m-%d') if student.enrollment_date else '',
-                    balance_display,
-                    status
-                ))
+                role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
+                if role != 'Headteacher':
+                    values = (
+                        student.student_id,
+                        student.student_code,
+                        student.first_name,
+                        student.last_name,
+                        student.class_name,
+                        student.parent_name or '',
+                        student.parent_phone or '',
+                        student.enrollment_date.strftime('%Y-%m-%d') if student.enrollment_date else '',
+                        balance_display,
+                        status
+                    )
+                else:
+                    values = (
+                        student.student_id,
+                        student.student_code,
+                        student.first_name,
+                        student.last_name,
+                        student.class_name,
+                        student.parent_name or '',
+                        student.parent_phone or '',
+                        student.enrollment_date.strftime('%Y-%m-%d') if student.enrollment_date else '',
+                        status
+                    )
+
+                self.students_tree.insert('', 'end', values=values)
             
             # Update status
             count = len(students)

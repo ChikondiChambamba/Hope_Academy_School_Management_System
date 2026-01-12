@@ -5,8 +5,9 @@ import config
 from database.connection import db
 
 class DashboardTab:
-    def __init__(self, parent):
+    def __init__(self, parent, role: str = 'Administrator'):
         self.parent = parent
+        self.role = role
         self.frame = ttk.Frame(parent)
         self.setup_ui()
         self.refresh_data()
@@ -82,11 +83,14 @@ class DashboardTab:
         stats_info = [
             ('👨‍🎓', 'Total Students', 'students', '#4CAF50'),
             ('👨‍🏫', 'Total Teachers', 'teachers', '#2196F3'),
-            ('💰', 'Today\'s Income', 'today_income', '#FF9800'),
             ('📊', 'Today\'s Attendance', 'today_attendance', '#9C27B0'),
-            ('📦', 'Low Stock Items', 'low_stock', '#F44336'),
-            ('📋', 'Pending Fees', 'pending_fees', '#607D8B')
         ]
+
+        # Finance-related cards (only for Administrator and Finance roles)
+        if self.role in ('Administrator', 'Finance'):
+            stats_info.append(('💰', 'Today\'s Income', 'today_income', '#FF9800'))
+            stats_info.append(('📦', 'Low Stock Items', 'low_stock', '#F44336'))
+            stats_info.append(('📋', 'Pending Fees', 'pending_fees', '#607D8B'))
         
         for i in range(0, len(stats_info), 3):
             row_frame = ttk.Frame(stats_frame)
@@ -167,12 +171,15 @@ class DashboardTab:
         
         actions = [
             ('📝 Take Attendance', self.take_attendance),
-            ('💰 Record Payment', self.record_payment),
             ('➕ Add Student', self.add_student),
             ('📊 Generate Report', self.generate_report),
-            ('📦 Check Inventory', self.check_inventory),
             ('📨 Send Notifications', self.send_notifications)
         ]
+
+        # Add finance actions only for Administrator and Finance
+        if self.role in ('Administrator', 'Finance'):
+            actions.insert(1, ('💰 Record Payment', self.record_payment))
+            actions.append(('📦 Check Inventory', self.check_inventory))
         
         for i in range(0, len(actions), 3):
             row_frame = ttk.Frame(actions_frame)
@@ -234,16 +241,17 @@ class DashboardTab:
             if result:
                 self.stats_vars['teachers'].set(str(result[0]['count']))
             
-            # Today's income
-            query = """
-                SELECT COALESCE(SUM(amount_paid), 0) as total 
-                FROM student_fees 
-                WHERE DATE(payment_date) = CURDATE()
-            """
-            result = db.execute_query(query, fetch=True)
-            if result:
-                from utils.helpers import format_currency
-                self.stats_vars['today_income'].set(format_currency(float(result[0]['total'])))
+            # Today's income (only for Administrator and Finance)
+            if self.role in ('Administrator', 'Finance'):
+                query = """
+                    SELECT COALESCE(SUM(amount_paid), 0) as total 
+                    FROM student_fees 
+                    WHERE DATE(payment_date) = CURDATE()
+                """
+                result = db.execute_query(query, fetch=True)
+                if result:
+                    from utils.helpers import format_currency
+                    self.stats_vars['today_income'].set(format_currency(float(result[0]['total'])))
             
             # Today's attendance
             query = """
@@ -260,23 +268,25 @@ class DashboardTab:
             else:
                 self.stats_vars['today_attendance'].set("No data")
             
-            # Low stock items
-            query = """
-                SELECT COUNT(*) as count 
-                FROM inventory_items 
-                WHERE quantity < min_quantity
-            """
-            result = db.execute_query(query, fetch=True)
-            if result:
-                self.stats_vars['low_stock'].set(str(result[0]['count']))
+            # Low stock items (only for Administrator and Finance)
+            if self.role in ('Administrator', 'Finance'):
+                query = """
+                    SELECT COUNT(*) as count 
+                    FROM inventory_items 
+                    WHERE quantity < min_quantity
+                """
+                result = db.execute_query(query, fetch=True)
+                if result:
+                    self.stats_vars['low_stock'].set(str(result[0]['count']))
             
-            # Pending fees (students with balance > 0) - use tuition mapping
-            acad_year = config.Config.CURRENT_ACADEMIC_YEAR
-            query = f"""
-                SELECT COUNT(DISTINCT s.student_id) as count
-                FROM students s
-                JOIN (
-                    SELECT 
+            # Pending fees (students with balance > 0) - only for Administrator and Finance
+            if self.role in ('Administrator', 'Finance'):
+                acad_year = config.Config.CURRENT_ACADEMIC_YEAR
+                query = f"""
+                    SELECT COUNT(DISTINCT s.student_id) as count
+                    FROM students s
+                    JOIN (
+                        SELECT 
                             s.student_id,
                             SUM(
                                 CASE
@@ -292,12 +302,12 @@ class DashboardTab:
                         WHERE ft.academic_year = '{acad_year}'
                         GROUP BY s.student_id
                         HAVING balance > 0
-                ) balances ON s.student_id = balances.student_id
-                WHERE s.is_active = 1
-            """
-            result = db.execute_query(query, fetch=True)
-            if result:
-                self.stats_vars['pending_fees'].set(str(result[0]['count']))
+                    ) balances ON s.student_id = balances.student_id
+                    WHERE s.is_active = 1
+                """
+                result = db.execute_query(query, fetch=True)
+                if result:
+                    self.stats_vars['pending_fees'].set(str(result[0]['count']))
                 
         except Exception as e:
             print(f"Error loading statistics: {e}")

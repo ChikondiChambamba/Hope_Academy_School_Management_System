@@ -47,13 +47,16 @@ class Config:
     PATHS = PATHS
 
     APP_NAME = APP_CONFIG.get('name', 'Application')
-    VERSION = APP_CONFIG.get('version', '0.0.0')
-    AUTHOR = APP_CONFIG.get('author', '')
+    VERSION = APP_CONFIG.get('version', '2.0.0')
+    AUTHOR = APP_CONFIG.get('author', 'Chikondi Chambamba')
 
     from datetime import datetime
     # Loadable setting - can be updated via Preferences UI
     CURRENT_ACADEMIC_YEAR = APP_CONFIG.get('academic_year', str(datetime.now().year))
     TERM_END_DATE = APP_CONFIG.get('term_end_date', None)
+    # Explicitly define TERM_START_DATE so it's always present on the Config class
+    TERM_START_DATE = APP_CONFIG.get('term_start_date', None)
+    CURRENT_USER_ROLE = APP_CONFIG.get('default_role', 'Administrator')
     CURRENT_TERM = APP_CONFIG.get('default_term', 'Term 1')
     TERMS = ['Term 1', 'Term 2', 'Term 3']
 
@@ -134,7 +137,20 @@ class Config:
                     if 'CURRENT_ACADEMIC_YEAR' in data:
                         Config.CURRENT_ACADEMIC_YEAR = data['CURRENT_ACADEMIC_YEAR']
                     if 'TERM_END_DATE' in data:
+                        # TERM_END_DATE may be stored as a string; keep as-is
                         Config.TERM_END_DATE = data['TERM_END_DATE']
+                    if 'TERM_START_DATE' in data:
+                        # TERM_START_DATE stored as string in YYYY-MM-DD format
+                        Config.TERM_START_DATE = data['TERM_START_DATE']
+                    if 'CURRENT_TERM' in data:
+                        Config.CURRENT_TERM = data['CURRENT_TERM']
+                    if 'CURRENT_USER_ROLE' in data:
+                        Config.CURRENT_USER_ROLE = data['CURRENT_USER_ROLE']
+                    # Users storage: mapping username -> role
+                    if 'USERS' in data and isinstance(data['USERS'], dict):
+                        Config.USERS = data['USERS']
+                    if 'CURRENT_USER' in data:
+                        Config.CURRENT_USER = data['CURRENT_USER']
         except Exception:
             pass
 
@@ -143,12 +159,93 @@ class Config:
         path = Config._user_settings_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            def _serialize(v):
+                # Convert date/datetime objects to string using configured format
+                from datetime import date, datetime
+                if isinstance(v, (date, datetime)):
+                    return v.strftime(Config.FILES.get('date_format', '%Y-%m-%d'))
+                return v
+
+            payload = {
+                'CURRENT_ACADEMIC_YEAR': _serialize(Config.CURRENT_ACADEMIC_YEAR),
+                'TERM_END_DATE': _serialize(Config.TERM_END_DATE),
+                'TERM_START_DATE': _serialize(getattr(Config, 'TERM_START_DATE', None)),
+                'CURRENT_TERM': _serialize(getattr(Config, 'CURRENT_TERM', None)),
+                'CURRENT_USER_ROLE': _serialize(Config.CURRENT_USER_ROLE),
+                'USERS': _serialize(getattr(Config, 'USERS', {})),
+                'CURRENT_USER': _serialize(getattr(Config, 'CURRENT_USER', None))
+            }
+
             with open(path, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'CURRENT_ACADEMIC_YEAR': Config.CURRENT_ACADEMIC_YEAR,
-                    'TERM_END_DATE': Config.TERM_END_DATE
-                }, f, indent=2)
+                json.dump(payload, f, indent=2)
             return True
+        except Exception:
+            # If writing fails, do not raise — but return False so callers can log/handle
+            return False
+
+    # Simple user management (stored in user_settings.json)
+    USERS = {}
+    CURRENT_USER = None
+    
+    # Role-based permissions map
+    PERMISSIONS = {
+        'Administrator': {
+            'dashboard', 'students', 'teachers', 'attendance', 'finance', 'inventory', 'reports', 'financial_reports', 'student_finance'
+        },
+        'Headteacher': {
+            'dashboard', 'students', 'teachers', 'attendance', 'reports'
+        },
+        'Finance': {
+            'dashboard', 'finance', 'inventory', 'financial_reports', 'student_finance'
+        },
+        'Inventory': {
+            'dashboard', 'inventory'
+        }
+    }
+
+    @staticmethod
+    def get_users():
+        return dict(Config.USERS or {})
+
+    @staticmethod
+    def add_user(username: str, role: str):
+        if not username:
+            return False
+        Config.USERS[username] = role
+        return Config.save_user_settings()
+
+    @staticmethod
+    def remove_user(username: str):
+        if username in Config.USERS:
+            del Config.USERS[username]
+            return Config.save_user_settings()
+        return False
+
+    @staticmethod
+    def set_current_user(username: str):
+        if username and username in Config.USERS:
+            Config.CURRENT_USER = username
+            Config.CURRENT_USER_ROLE = Config.USERS[username]
+            return Config.save_user_settings()
+        return False
+
+    @staticmethod
+    def set_user_role(username: str, role: str):
+        if username in Config.USERS:
+            Config.USERS[username] = role
+            # if changing current user's role, update CURRENT_USER_ROLE
+            if Config.CURRENT_USER == username:
+                Config.CURRENT_USER_ROLE = role
+            return Config.save_user_settings()
+        return False
+
+    @staticmethod
+    def has_permission(feature: str) -> bool:
+        """Return True if the current role is allowed to access the given feature."""
+        try:
+            role = getattr(Config, 'CURRENT_USER_ROLE', 'Administrator')
+            allowed = Config.PERMISSIONS.get(role, set())
+            return feature in allowed
         except Exception:
             return False
 

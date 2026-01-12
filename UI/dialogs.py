@@ -2,7 +2,7 @@
 Dialog boxes for the School Management System
 """
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from datetime import datetime, date, time
 from typing import Optional, Dict, Any
 import config
@@ -405,15 +405,16 @@ class StudentPreviewDialog(BaseDialog):
         notebook.add(parent_frame, text='Parent / Contact')
         self._build_parent_tab(parent_frame)
 
-        # Finance tab: fee types and totals
-        finance_frame = ttk.Frame(notebook)
-        notebook.add(finance_frame, text='Finance')
-        self._build_finance_tab(finance_frame)
+        # Finance & Payments tabs: only show if user has permission to view student finances
+        if config.Config.has_permission('student_finance'):
+            finance_frame = ttk.Frame(notebook)
+            notebook.add(finance_frame, text='Finance')
+            self._build_finance_tab(finance_frame)
 
-        # Payment history tab
-        payments_frame = ttk.Frame(notebook)
-        notebook.add(payments_frame, text='Payments')
-        self._build_payments_tab(payments_frame)
+            # Payment history tab
+            payments_frame = ttk.Frame(notebook)
+            notebook.add(payments_frame, text='Payments')
+            self._build_payments_tab(payments_frame)
 
         # OK button only
         btn_frame = ttk.Frame(self.dialog)
@@ -886,22 +887,24 @@ class FeePaymentDialog(BaseDialog):
     
     def on_ok(self):
         """Process fee payment"""
+        # Handler invoked; proceed to validation and save
+
         if not self.validate_input():
             return
-        
+
         try:
             # Parse fee type
             fee_type_str = self.fee_type_var.get()
             fee_name = fee_type_str.split(' (')[0]
-            
+
             # Get fee type ID
             fee_types = FeeType.get_all()
             fee_type = next((ft for ft in fee_types if ft.fee_name == fee_name), None)
-            
+
             if not fee_type:
                 messagebox.showerror("Error", "Fee type not found")
                 return
-            
+
             # Create payment record
             fee_payment = FeePayment(
                 student_id=self.student.student_id,
@@ -912,9 +915,9 @@ class FeePaymentDialog(BaseDialog):
                 receipt_number=self.receipt_entry.get().strip() or None,
                 description=self.desc_text.get('1.0', tk.END).strip()
             )
-            
+
             success, message = fee_payment.save()
-            
+
             if success:
                 # Notify application to refresh totals and views
                 try:
@@ -928,7 +931,7 @@ class FeePaymentDialog(BaseDialog):
                 self.dialog.destroy()
             else:
                 messagebox.showerror("Error", message)
-                
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to record payment: {str(e)}")
 
@@ -1195,6 +1198,158 @@ class AttendanceDialog(BaseDialog):
         """Save attendance changes"""
         if not self.validate_input():
             return
+
+
+class UsersDialog(BaseDialog):
+    """Dialog to manage application users and their roles"""
+    def __init__(self, parent):
+        super().__init__(parent, "Manage Users", 600, 400)
+        self.setup_ui()
+
+    def setup_ui(self):
+        frame = self.main_frame
+        # Users tree
+        cols = ('Username', 'Role', 'Current')
+        self.tree = ttk.Treeview(frame, columns=cols, show='headings', height=12)
+        for c in cols:
+            self.tree.heading(c, text=c)
+            self.tree.column(c, width=150)
+        self.tree.pack(fill='both', expand=True, pady=(0,10))
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill='x')
+
+        ttk.Button(btn_frame, text='Add User', command=self.add_user).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text='Edit Role', command=self.edit_role).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text='Remove User', command=self.remove_user).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text='Set As Current', command=self.set_current_user).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text='Close', command=self.on_cancel).pack(side='right')
+
+        self.load_users()
+
+    def load_users(self):
+        # clear
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        users = config.Config.get_users()
+        current = getattr(config.Config, 'CURRENT_USER', None)
+        for uname, role in (users or {}).items():
+            is_current = 'Yes' if current == uname else ''
+            self.tree.insert('', 'end', values=(uname, role, is_current))
+
+    def add_user(self):
+        uname = simpledialog.askstring('Add User', 'Username:', parent=self.dialog)
+        if not uname:
+            return
+        # choose role
+        roles = list(config.Config.PERMISSIONS.keys())
+        role = simpledialog.askstring('Role', f'Role for {uname} (options: {", ".join(roles)}):', parent=self.dialog)
+        if not role:
+            return
+        if role not in roles:
+            messagebox.showerror('Invalid Role', 'Role not recognized')
+            return
+        if config.Config.add_user(uname, role):
+            self.load_users()
+            messagebox.showinfo('Success', f'User {uname} added with role {role}')
+        else:
+            messagebox.showerror('Error', 'Failed to add user')
+
+    def edit_role(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning('No Selection', 'Select a user to edit')
+            return
+        item = sel[0]
+        uname, old_role, _ = self.tree.item(item, 'values')
+        roles = list(config.Config.PERMISSIONS.keys())
+        role = simpledialog.askstring('Edit Role', f'New role for {uname} (options: {", ".join(roles)}):', parent=self.dialog, initialvalue=old_role)
+        if not role:
+            return
+        if role not in roles:
+            messagebox.showerror('Invalid Role', 'Role not recognized')
+            return
+        if config.Config.set_user_role(uname, role):
+            self.load_users()
+            # If current user changed role, emit event
+            try:
+                root = self.dialog.winfo_toplevel()
+                root.event_generate('<<UserRoleChanged>>')
+            except Exception:
+                pass
+            messagebox.showinfo('Success', f'Updated {uname} to role {role}')
+        else:
+            messagebox.showerror('Error', 'Failed to update role')
+
+    def remove_user(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning('No Selection', 'Select a user to remove')
+            return
+        item = sel[0]
+        uname = self.tree.item(item, 'values')[0]
+        if messagebox.askyesno('Confirm', f'Remove user {uname}?'):
+            if config.Config.remove_user(uname):
+                self.load_users()
+                messagebox.showinfo('Removed', f'User {uname} removed')
+            else:
+                messagebox.showerror('Error', 'Failed to remove user')
+
+    def set_current_user(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning('No Selection', 'Select a user to set as current')
+            return
+        item = sel[0]
+        uname = self.tree.item(item, 'values')[0]
+        if config.Config.set_current_user(uname):
+            try:
+                root = self.dialog.winfo_toplevel()
+                root.event_generate('<<UserRoleChanged>>')
+            except Exception:
+                pass
+            self.load_users()
+            messagebox.showinfo('Success', f'Logged in as {uname}')
+        else:
+            messagebox.showerror('Error', 'Failed to set current user')
+
+
+class LoginDialog(BaseDialog):
+    """Simple login dialog to pick an existing user"""
+    def __init__(self, parent):
+        super().__init__(parent, 'Login', 360, 180)
+        self.setup_ui()
+
+    def setup_ui(self):
+        frame = self.main_frame
+        ttk.Label(frame, text='Select User:').pack(anchor='w', pady=(6,4))
+        users = list((config.Config.get_users() or {}).keys())
+        self.user_var = tk.StringVar()
+        self.combo = ttk.Combobox(frame, textvariable=self.user_var, values=users, width=30)
+        self.combo.pack(anchor='w', pady=(0,8))
+        if users:
+            self.combo.current(0)
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill='x', pady=(8,0))
+        ttk.Button(btn_frame, text='Login', command=self.on_ok).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text='Cancel', command=self.on_cancel).pack(side='left')
+
+    def on_ok(self):
+        uname = self.user_var.get()
+        if not uname:
+            messagebox.showwarning('No User', 'Select a user to login')
+            return
+        if config.Config.set_current_user(uname):
+            try:
+                root = self.dialog.winfo_toplevel()
+                root.event_generate('<<UserRoleChanged>>')
+            except Exception:
+                pass
+            self.result = True
+            self.dialog.destroy()
+        else:
+            messagebox.showerror('Login Failed', 'Failed to set current user')
         
         self.result = True
         self.dialog.destroy()
@@ -1309,6 +1464,14 @@ class PreferencesDialog(BaseDialog):
         ttk.Label(acad_frame, text="Term End Date (YYYY-MM-DD):").grid(row=1, column=0, sticky='e', padx=(0,10), pady=5)
         self.term_end_var = tk.StringVar(value=getattr(config.Config, 'TERM_END_DATE', '') or '')
         ttk.Entry(acad_frame, textvariable=self.term_end_var, width=20).grid(row=1, column=1, sticky='w', pady=5)
+
+        ttk.Label(acad_frame, text="Term Start Date (YYYY-MM-DD):").grid(row=2, column=0, sticky='e', padx=(0,10), pady=5)
+        self.term_start_var = tk.StringVar(value=getattr(config.Config, 'TERM_START_DATE', '') or '')
+        ttk.Entry(acad_frame, textvariable=self.term_start_var, width=20).grid(row=2, column=1, sticky='w', pady=5)
+
+        ttk.Label(acad_frame, text="Current Term:").grid(row=3, column=0, sticky='e', padx=(0,10), pady=5)
+        self.current_term_var = tk.StringVar(value=getattr(config.Config, 'CURRENT_TERM', '') or '')
+        ttk.Combobox(acad_frame, textvariable=self.current_term_var, values=getattr(config.Config, 'TERMS', ['Term 1','Term 2','Term 3']), width=18, state='readonly').grid(row=3, column=1, sticky='w', pady=5)
         
         # Create button box
         self.create_button_box(self.main_frame)
@@ -1327,9 +1490,22 @@ class PreferencesDialog(BaseDialog):
             config.Config.CURRENT_ACADEMIC_YEAR = new_acad
         term_end = self.term_end_var.get().strip()
         config.Config.TERM_END_DATE = term_end if term_end else None
+        # Term start and current term
+        term_start = self.term_start_var.get().strip()
+        config.Config.TERM_START_DATE = term_start if term_start else None
+        current_term = self.current_term_var.get().strip()
+        if current_term:
+            config.Config.CURRENT_TERM = current_term
         # Persist user settings
         try:
             config.Config.save_user_settings()
+        except Exception:
+            pass
+
+        # Notify application that preferences changed (apply immediately)
+        try:
+            root = self.dialog.winfo_toplevel()
+            root.event_generate('<<PreferencesChanged>>')
         except Exception:
             pass
         
