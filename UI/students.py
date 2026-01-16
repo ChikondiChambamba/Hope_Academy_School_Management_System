@@ -690,7 +690,7 @@ class StudentsTab:
             self.frame,
             title="Confirm Delete",
             message=f"Are you sure you want to delete student:\n{student_name}?",
-            warning="This action cannot be undone. All attendance and fee records will be preserved."
+            warning="This action cannot be undone."
         )
         
         if not dialog.show():

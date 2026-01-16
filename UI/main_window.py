@@ -136,6 +136,8 @@ class MainWindow:
         menubar.add_cascade(label="Edit", menu=edit_menu)
         edit_menu.add_command(label="Preferences", 
                              command=self.open_preferences)
+        edit_menu.add_command(label="Change Password",
+                 command=self.open_change_password)
         # User management
         edit_menu.add_command(label="Manage Users",
                              command=self.open_user_manager,
@@ -149,7 +151,9 @@ class MainWindow:
                              accelerator="F5")
         view_menu.add_separator()
         
-        # Add checkbuttons for tabs based on permissions
+        # Add checkbuttons for tabs (always visible in the View menu).
+        # Initial checked state follows permissions so users see which tabs
+        # their role allows but can toggle visibility on/off.
         self.tab_vars = {}
         tabs_map = [
             ('dashboard', 'Dashboard'),
@@ -161,12 +165,12 @@ class MainWindow:
             ('reports', 'Reports')
         ]
         for feature, tab_name in tabs_map:
-            if config.Config.has_permission(feature):
-                var = tk.BooleanVar(value=True)
-                self.tab_vars[tab_name] = var
-                view_menu.add_checkbutton(label=tab_name,
-                                          variable=var,
-                                          command=lambda t=tab_name: self.toggle_tab(t))
+            allowed = config.Config.has_permission(feature)
+            var = tk.BooleanVar(value=allowed)
+            self.tab_vars[tab_name] = var
+            view_menu.add_checkbutton(label=tab_name,
+                                      variable=var,
+                                      command=lambda t=tab_name: self.toggle_tab(t))
         
         # Tools menu
         tools_menu = Menu(menubar, tearoff=0)
@@ -326,20 +330,27 @@ class MainWindow:
             from UI.inventory import InventoryTab
             from UI.attendance import AttendanceTab
             from UI.reports import ReportsTab
-            # Create tab instances based on permissions
-            if config.Config.has_permission('dashboard'):
+            # Create tab instances based on View menu state or permissions
+            def should_create(feature_name, tab_name):
+                try:
+                    # If the View checkbox is checked, create the tab.
+                    return bool(self.tab_vars.get(tab_name, tk.BooleanVar(value=True)).get()) or config.Config.has_permission(feature_name)
+                except Exception:
+                    return config.Config.has_permission(feature_name)
+
+            if should_create('dashboard', 'Dashboard'):
                 self.tabs['Dashboard'] = DashboardTab(self.notebook, role=getattr(config.Config, 'CURRENT_USER_ROLE', ''))
-            if config.Config.has_permission('students'):
+            if should_create('students', 'Students'):
                 self.tabs['Students'] = StudentsTab(self.notebook)
-            if config.Config.has_permission('teachers'):
+            if should_create('teachers', 'Teachers'):
                 self.tabs['Teachers'] = TeachersTab(self.notebook)
-            if config.Config.has_permission('finance'):
+            if should_create('finance', 'Finance'):
                 self.tabs['Finance'] = FinanceTab(self.notebook)
-            if config.Config.has_permission('inventory'):
+            if should_create('inventory', 'Inventory'):
                 self.tabs['Inventory'] = InventoryTab(self.notebook)
-            if config.Config.has_permission('attendance'):
+            if should_create('attendance', 'Attendance'):
                 self.tabs['Attendance'] = AttendanceTab(self.notebook)
-            if config.Config.has_permission('reports'):
+            if should_create('reports', 'Reports'):
                 self.tabs['Reports'] = ReportsTab(self.notebook)
 
             # Add tabs to notebook
@@ -430,16 +441,61 @@ class MainWindow:
     def toggle_tab(self, tab_name):
         """Toggle tab visibility"""
         try:
+            # If toggling on and tab not created yet, try to create it
+            is_on = bool(self.tab_vars.get(tab_name, tk.BooleanVar(value=True)).get())
+            if is_on and tab_name not in self.tabs:
+                try:
+                    self._create_tab_by_name(tab_name)
+                except Exception:
+                    pass
+
             if tab_name in self.tabs:
-                tab_index = list(self.tabs.keys()).index(tab_name)
-                
+                try:
+                    tab_index = list(self.tabs.keys()).index(tab_name)
+                except ValueError:
+                    tab_index = None
+
                 if self.tab_vars[tab_name].get():
-                    # Show tab
-                    self.notebook.add(self.tabs[tab_name].frame, text=tab_name)
+                    # Show tab (add if missing)
+                    if tab_index is None:
+                        try:
+                            self.notebook.add(self.tabs[tab_name].frame, text=tab_name)
+                        except Exception:
+                            pass
                 else:
-                    # Hide tab
-                    self.notebook.forget(tab_index)
+                    # Hide tab if present
+                    if tab_index is not None:
+                        try:
+                            self.notebook.forget(tab_index)
+                        except Exception:
+                            pass
         except:
+            pass
+
+    def _create_tab_by_name(self, tab_name: str):
+        """Create a single tab instance by name and add to notebook and `self.tabs`."""
+        mapping = {
+            'Dashboard': ('UI.dashboard', 'DashboardTab'),
+            'Students': ('UI.students', 'StudentsTab'),
+            'Teachers': ('UI.teachers', 'TeachersTab'),
+            'Finance': ('UI.finance', 'FinanceTab'),
+            'Inventory': ('UI.inventory', 'InventoryTab'),
+            'Attendance': ('UI.attendance', 'AttendanceTab'),
+            'Reports': ('UI.reports', 'ReportsTab')
+        }
+        if tab_name not in mapping:
+            return
+        module_name, class_name = mapping[tab_name]
+        mod = __import__(module_name, fromlist=[class_name])
+        TabClass = getattr(mod, class_name)
+        if tab_name == 'Dashboard':
+            inst = TabClass(self.notebook, role=getattr(config.Config, 'CURRENT_USER_ROLE', ''))
+        else:
+            inst = TabClass(self.notebook)
+        self.tabs[tab_name] = inst
+        try:
+            self.notebook.add(inst.frame, text=tab_name)
+        except Exception:
             pass
     
     # Menu command implementations
@@ -553,6 +609,21 @@ class MainWindow:
             self.update_status("User list updated")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open user manager: {e}")
+
+    def open_change_password(self):
+        """Allow current user to change their own password"""
+        try:
+            user = getattr(config.Config, 'CURRENT_USER', None)
+            if not user:
+                messagebox.showwarning('Not logged in', 'No user is currently logged in')
+                return
+            from UI.dialogs import ChangePasswordDialog
+            dlg = ChangePasswordDialog(self.root, username=user)
+            dlg.show()
+            if getattr(dlg, 'result', False):
+                messagebox.showinfo('Success', 'Password changed')
+        except Exception as e:
+            messagebox.showerror('Error', str(e))
     
     def refresh_all(self):
         """Refresh all tabs"""

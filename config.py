@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 import json
+import hashlib
+import secrets
 
 # Base directory
 BASE_DIR = Path(__file__).parent
@@ -21,7 +23,7 @@ APP_CONFIG = {
     'name': 'Hope Academy School Management System',
     'version': '1.0.0',
     'author': 'School Admin',
-    'default_term': 'Term 2',
+    'default_term': 'Term 1',
     'academic_year': '2025-2026',
 }
 
@@ -146,9 +148,16 @@ class Config:
                         Config.CURRENT_TERM = data['CURRENT_TERM']
                     if 'CURRENT_USER_ROLE' in data:
                         Config.CURRENT_USER_ROLE = data['CURRENT_USER_ROLE']
-                    # Users storage: mapping username -> role
+                    # Users storage: normalize to mapping username -> {role, password}
                     if 'USERS' in data and isinstance(data['USERS'], dict):
-                        Config.USERS = data['USERS']
+                        raw = data['USERS']
+                        normalized = {}
+                        for k, v in raw.items():
+                            if isinstance(v, dict):
+                                normalized[k] = v
+                            else:
+                                normalized[k] = {'role': v, 'password': None}
+                        Config.USERS = normalized
                     if 'CURRENT_USER' in data:
                         Config.CURRENT_USER = data['CURRENT_USER']
         except Exception:
@@ -172,6 +181,7 @@ class Config:
                 'TERM_START_DATE': _serialize(getattr(Config, 'TERM_START_DATE', None)),
                 'CURRENT_TERM': _serialize(getattr(Config, 'CURRENT_TERM', None)),
                 'CURRENT_USER_ROLE': _serialize(Config.CURRENT_USER_ROLE),
+                # USERS stored as username -> {role, password}
                 'USERS': _serialize(getattr(Config, 'USERS', {})),
                 'CURRENT_USER': _serialize(getattr(Config, 'CURRENT_USER', None))
             }
@@ -184,6 +194,7 @@ class Config:
             return False
 
     # Simple user management (stored in user_settings.json)
+    # USERS structure: { username: { 'role': '<RoleName>', 'password': '<iterations$salt$hash>' | None } }
     USERS = {}
     CURRENT_USER = None
     
@@ -205,13 +216,50 @@ class Config:
 
     @staticmethod
     def get_users():
-        return dict(Config.USERS or {})
+        # Return mapping username -> role for backward compatibility
+        out = {}
+        for u, info in (Config.USERS or {}).items():
+            if isinstance(info, dict):
+                out[u] = info.get('role')
+            else:
+                out[u] = info
+        return out
 
     @staticmethod
-    def add_user(username: str, role: str):
+    def get_user_info(username: str):
+        return (Config.USERS or {}).get(username)
+
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        if password is None:
+            return None
+        iterations = 100_000
+        salt = secrets.token_bytes(16)
+        dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iterations)
+        return f"{iterations}${salt.hex()}${dk.hex()}"
+
+    @staticmethod
+    def _verify_password(stored: str, provided: str) -> bool:
+        try:
+            if not stored:
+                return False
+            parts = stored.split('$')
+            if len(parts) != 3:
+                return False
+            iterations = int(parts[0])
+            salt = bytes.fromhex(parts[1])
+            expected = parts[2]
+            dk = hashlib.pbkdf2_hmac('sha256', provided.encode('utf-8'), salt, iterations)
+            return secrets.compare_digest(dk.hex(), expected)
+        except Exception:
+            return False
+
+    @staticmethod
+    def add_user(username: str, role: str, password: str = None):
         if not username:
             return False
-        Config.USERS[username] = role
+        pwd_hash = Config._hash_password(password) if password else None
+        Config.USERS[username] = {'role': role, 'password': pwd_hash}
         return Config.save_user_settings()
 
     @staticmethod
@@ -225,19 +273,53 @@ class Config:
     def set_current_user(username: str):
         if username and username in Config.USERS:
             Config.CURRENT_USER = username
-            Config.CURRENT_USER_ROLE = Config.USERS[username]
+            info = Config.USERS.get(username)
+            if isinstance(info, dict):
+                Config.CURRENT_USER_ROLE = info.get('role')
+            else:
+                Config.CURRENT_USER_ROLE = info
             return Config.save_user_settings()
         return False
 
     @staticmethod
     def set_user_role(username: str, role: str):
         if username in Config.USERS:
-            Config.USERS[username] = role
-            # if changing current user's role, update CURRENT_USER_ROLE
+            info = Config.USERS.get(username)
+            if isinstance(info, dict):
+                info['role'] = role
+                Config.USERS[username] = info
+            else:
+                Config.USERS[username] = {'role': role, 'password': None}
             if Config.CURRENT_USER == username:
                 Config.CURRENT_USER_ROLE = role
             return Config.save_user_settings()
         return False
+
+    @staticmethod
+    def set_user_password(username: str, password: str) -> bool:
+        if username not in Config.USERS:
+            return False
+        try:
+            info = Config.USERS.get(username)
+            if not isinstance(info, dict):
+                info = {'role': info, 'password': None}
+            info['password'] = Config._hash_password(password) if password else None
+            Config.USERS[username] = info
+            return Config.save_user_settings()
+        except Exception:
+            return False
+
+    @staticmethod
+    def verify_user_credentials(username: str, password: str) -> bool:
+        info = Config.USERS.get(username)
+        if not info:
+            return False
+        if not isinstance(info, dict):
+            return False
+        stored = info.get('password')
+        if not stored:
+            return False
+        return Config._verify_password(stored, password)
 
     @staticmethod
     def has_permission(feature: str) -> bool:

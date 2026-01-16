@@ -666,6 +666,74 @@ class FeeTypeDialog(BaseDialog):
         self.req_var = tk.IntVar(value=1 if self.fee_type.get('is_required', True) else 0)
         ttk.Checkbutton(frame, text='Required', variable=self.req_var).grid(row=3, column=1, sticky='w', pady=8)
 
+        # Apply to specific classes
+        ttk.Label(frame, text="Apply To Classes:").grid(row=4, column=0, sticky='ne', padx=5, pady=8)
+        # Fetch classes from DB; if none, fall back to distinct classes in students table
+        try:
+            from database.connection import db
+            classes_res = db.execute_query("SELECT class_id, class_name FROM classes ORDER BY class_name", fetch=True)
+            classes_list = [(r['class_id'], r['class_name']) for r in classes_res] if classes_res else []
+            # Fallback: if classes table empty, try distinct values from students.class
+            if not classes_list:
+                try:
+                    studs = db.execute_query("SELECT DISTINCT class FROM students WHERE class IS NOT NULL ORDER BY class", fetch=True)
+                    if studs:
+                        for s in studs:
+                            cname = s.get('class')
+                            if not cname:
+                                continue
+                            # ensure class exists in classes table
+                            exist = db.execute_query("SELECT class_id FROM classes WHERE class_name=%s", (cname,), fetch=True)
+                            if not exist:
+                                try:
+                                    db.execute_query("INSERT INTO classes (class_name, academic_year) VALUES (%s, %s)", (cname, config.Config.CURRENT_ACADEMIC_YEAR))
+                                except Exception:
+                                    pass
+                        # requery classes table
+                        classes_res = db.execute_query("SELECT class_id, class_name FROM classes ORDER BY class_name", fetch=True)
+                        classes_list = [(r['class_id'], r['class_name']) for r in classes_res] if classes_res else []
+                except Exception:
+                    pass
+        except Exception:
+            classes_list = []
+
+        # Build display -> id map; if id is missing (from students fallback) map to None
+        self.class_ids_map = {}
+        for cid, cname in classes_list:
+            display = cname
+            self.class_ids_map[display] = cid
+
+        # Frame for listbox and scrollbar
+        lb_frame = ttk.Frame(frame)
+        lb_frame.grid(row=4, column=1, sticky='w', pady=8)
+
+        self.apply_all_var = tk.IntVar(value=1 if not self.fee_type.get('class_ids') else 0)
+        ttk.Checkbutton(frame, text='Apply to all classes', variable=self.apply_all_var).grid(row=5, column=1, sticky='w')
+
+        # Use checkboxes for each class so multiple selections are obvious
+        self.class_vars = {}
+        check_frame = ttk.Frame(lb_frame)
+        check_frame.pack(side='left', fill='both', expand=True)
+
+        for cid, cname in classes_list:
+            display = cname
+            var = tk.BooleanVar(value=False)
+            cb = ttk.Checkbutton(check_frame, text=display, variable=var)
+            cb.pack(anchor='w')
+            self.class_vars[display] = var
+
+        # Preselect classes if editing and mappings provided
+        existing_class_ids = self.fee_type.get('class_ids') or []
+        if existing_class_ids:
+            self.apply_all_var.set(0)
+            for name, var in self.class_vars.items():
+                mapped = self.class_ids_map.get(name)
+                try:
+                    if mapped and int(mapped) in existing_class_ids:
+                        var.set(True)
+                except Exception:
+                    pass
+
         self.create_button_box(frame)
 
     def on_ok(self):
@@ -689,6 +757,24 @@ class FeeTypeDialog(BaseDialog):
             'term': term,
             'is_required': is_required
         }
+        # classes selection
+        apply_all = bool(self.apply_all_var.get())
+        selected_ids = []
+        selected_names = []
+        if not apply_all:
+            for name, var in (self.class_vars or {}).items():
+                if var.get():
+                    mapped = self.class_ids_map.get(name)
+                    if mapped:
+                        try:
+                            selected_ids.append(int(mapped))
+                            continue
+                        except Exception:
+                            pass
+                    selected_names.append(name)
+        self.result_data['apply_to_all'] = apply_all
+        self.result_data['class_ids'] = selected_ids
+        self.result_data['class_names'] = selected_names
         self.result = True
         self.dialog.destroy()
 
@@ -1288,6 +1374,7 @@ class UsersDialog(BaseDialog):
         btn_frame.pack(fill='x')
 
         ttk.Button(btn_frame, text='Add User', command=self.add_user).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text='Change Password', command=self.change_password).pack(side='left', padx=4)
         ttk.Button(btn_frame, text='Edit Role', command=self.edit_role).pack(side='left', padx=4)
         ttk.Button(btn_frame, text='Remove User', command=self.remove_user).pack(side='left', padx=4)
         ttk.Button(btn_frame, text='Set As Current', command=self.set_current_user).pack(side='left', padx=4)
@@ -1317,7 +1404,8 @@ class UsersDialog(BaseDialog):
         if role not in roles:
             messagebox.showerror('Invalid Role', 'Role not recognized')
             return
-        if config.Config.add_user(uname, role):
+        pwd = simpledialog.askstring('Password', f'Set password for {uname} (leave blank for none):', parent=self.dialog, show='*')
+        if config.Config.add_user(uname, role, password=pwd):
             self.load_users()
             messagebox.showinfo('Success', f'User {uname} added with role {role}')
         else:
@@ -1381,6 +1469,25 @@ class UsersDialog(BaseDialog):
         else:
             messagebox.showerror('Error', 'Failed to set current user')
 
+    def change_password(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning('No Selection', 'Select a user to change password')
+            return
+        item = sel[0]
+        uname = self.tree.item(item, 'values')[0]
+        pwd = simpledialog.askstring('Set Password', f'Enter new password for {uname}:', parent=self.dialog, show='*')
+        if pwd is None:
+            return
+        confirm = simpledialog.askstring('Confirm Password', f'Confirm new password for {uname}:', parent=self.dialog, show='*')
+        if pwd != confirm:
+            messagebox.showerror('Mismatch', 'Passwords do not match')
+            return
+        if config.Config.set_user_password(uname, pwd):
+            messagebox.showinfo('Success', 'Password updated')
+        else:
+            messagebox.showerror('Error', 'Failed to update password')
+
 
 class LoginDialog(BaseDialog):
     """Simple login dialog to pick an existing user"""
@@ -1408,6 +1515,37 @@ class LoginDialog(BaseDialog):
         if not uname:
             messagebox.showwarning('No User', 'Select a user to login')
             return
+
+        info = config.Config.get_user_info(uname) or {}
+        # If user has no password, offer to set one now
+        if not info.get('password'):
+            set_now = messagebox.askyesno('Set Password', f'User "{uname}" has no password. Set one now?')
+            if set_now:
+                pwd = simpledialog.askstring('Set Password', f'Enter new password for {uname}:', parent=self.dialog, show='*')
+                if pwd is None:
+                    return
+                confirm = simpledialog.askstring('Confirm Password', f'Confirm new password for {uname}:', parent=self.dialog, show='*')
+                if pwd != confirm:
+                    messagebox.showerror('Mismatch', 'Passwords do not match')
+                    return
+                if not config.Config.set_user_password(uname, pwd):
+                    messagebox.showerror('Error', 'Failed to set password')
+                    return
+            else:
+                # allow login without password if user declines
+                pass
+
+        # If password is now set, require it
+        info = config.Config.get_user_info(uname) or {}
+        if info.get('password'):
+            pwd = simpledialog.askstring('Password', f'Password for {uname}:', parent=self.dialog, show='*')
+            if pwd is None:
+                return
+            if not config.Config.verify_user_credentials(uname, pwd):
+                messagebox.showerror('Login Failed', 'Invalid credentials')
+                return
+
+        # Set current user
         if config.Config.set_current_user(uname):
             try:
                 root = self.dialog.winfo_toplevel()
@@ -1418,9 +1556,6 @@ class LoginDialog(BaseDialog):
             self.dialog.destroy()
         else:
             messagebox.showerror('Login Failed', 'Failed to set current user')
-        
-        self.result = True
-        self.dialog.destroy()
 
 
 class ConfirmationDialog:
@@ -1584,6 +1719,60 @@ class PreferencesDialog(BaseDialog):
         
         self.result = True
         self.dialog.destroy()
+
+
+class ChangePasswordDialog(BaseDialog):
+    """Dialog for changing the current user's password"""
+    def __init__(self, parent, username: str):
+        super().__init__(parent, 'Change Password', 420, 240)
+        self.username = username
+        self.setup_ui()
+
+    def setup_ui(self):
+        frame = self.main_frame
+        ttk.Label(frame, text=f'Change password for: {self.username}').pack(anchor='w', pady=(0,8))
+
+        ttk.Label(frame, text='Current Password:').pack(anchor='w')
+        self.current_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=self.current_var, show='*').pack(fill='x', pady=(0,8))
+
+        ttk.Label(frame, text='New Password:').pack(anchor='w')
+        self.new_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=self.new_var, show='*').pack(fill='x', pady=(0,8))
+
+        ttk.Label(frame, text='Confirm New Password:').pack(anchor='w')
+        self.confirm_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=self.confirm_var, show='*').pack(fill='x', pady=(0,8))
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill='x', pady=(8,0))
+        ttk.Button(btn_frame, text='Change', command=self.on_ok).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text='Cancel', command=self.on_cancel).pack(side='left')
+
+    def on_ok(self):
+        current = self.current_var.get() or ''
+        new = self.new_var.get() or ''
+        confirm = self.confirm_var.get() or ''
+
+        if not new:
+            messagebox.showerror('Validation', 'New password cannot be empty')
+            return
+        if new != confirm:
+            messagebox.showerror('Validation', 'New passwords do not match')
+            return
+
+        info = config.Config.get_user_info(self.username) or {}
+        if info.get('password'):
+            if not config.Config.verify_user_credentials(self.username, current):
+                messagebox.showerror('Authentication', 'Current password is incorrect')
+                return
+
+        if config.Config.set_user_password(self.username, new):
+            messagebox.showinfo('Success', 'Password changed successfully')
+            self.result = True
+            self.dialog.destroy()
+        else:
+            messagebox.showerror('Error', 'Failed to change password')
     
     def save_config_to_file(self):
         """Save config to file (implementation would write to config.py)"""

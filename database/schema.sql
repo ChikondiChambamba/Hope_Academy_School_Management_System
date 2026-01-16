@@ -216,6 +216,20 @@ CREATE TABLE student_classes (
     INDEX idx_class_id (class_id)
 );
 
+-- Mapping table for fee types to classes (allow fee types to target specific classes)
+CREATE TABLE fee_type_classes (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    fee_type_id INT NOT NULL,
+    class_id INT NOT NULL,
+    academic_year VARCHAR(20),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (fee_type_id) REFERENCES fee_types(fee_type_id) ON DELETE CASCADE,
+    FOREIGN KEY (class_id) REFERENCES classes(class_id) ON DELETE CASCADE,
+
+    UNIQUE KEY unique_fee_type_class (fee_type_id, class_id)
+);
+
 -- Create Views for Common Queries
 
 -- View for Student Fee Summary
