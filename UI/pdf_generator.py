@@ -730,14 +730,15 @@ def generate_balances_pdf(output_file=None):
     
     total_due = total_paid = total_balance = 0
     for balance in balances:
+        total_due_with_carry = float(balance['total_due']) + float(balance.get('carried_balance') or 0)
         data.append([
             balance['student_name'],
             balance['class'],
-            f"${balance['total_due']:,.2f}",
+            f"${total_due_with_carry:,.2f}",
             f"${balance['total_paid']:,.2f}",
             f"${balance['balance']:,.2f}"
         ])
-        total_due += float(balance['total_due'])
+        total_due += total_due_with_carry
         total_paid += float(balance['total_paid'])
         total_balance += float(balance['balance'])
     

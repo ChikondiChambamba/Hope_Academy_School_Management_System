@@ -423,59 +423,33 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
         bottomMargin=72
     )
     
-    # Get data
-    # Compute per-student totals by summing applicable fee types (respecting exemptions and
-    # registration/uniform rules) and subtracting payments. Avoid CROSS JOIN which sums
-    # every fee type for every student.
-    query = """
-        SELECT
-            s.student_code,
-            CONCAT(s.first_name, ' ', s.last_name) AS student_name,
-            s.class,
-            -- Sum expected amounts per student, zeroing-out exempted fees and fees that don't apply
-            COALESCE(SUM(
-                CASE
-                    WHEN sfe.exemption_id IS NOT NULL THEN 0
-                    WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
-                    ELSE ft.amount
-                END
-            ), 0) AS total_due,
-            COALESCE(SUM(sf.amount_paid), 0) AS total_paid,
-            COALESCE(SUM(
-                CASE
-                    WHEN sfe.exemption_id IS NOT NULL THEN 0
-                    WHEN (LOWER(ft.fee_name) LIKE '%registration%' OR LOWER(ft.fee_name) LIKE '%uniform%') AND s.is_new = 0 THEN 0
-                    ELSE ft.amount
-                END
-            ), 0) - COALESCE(SUM(sf.amount_paid), 0) AS balance
-        FROM students s
-        LEFT JOIN fee_types ft ON ft.academic_year = %s
-        LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
-        LEFT JOIN student_fees sf ON sf.student_id = s.student_id AND sf.fee_type_id = ft.fee_type_id
-        WHERE s.is_active = 1
-    """
-    
-    conditions = []
-    values = [academic_year]
-    
-    if class_filter != 'All':
-        conditions.append("s.class = %s")
-        values.append(class_filter)
-    
-    if balance_filter == 'With Balance Only':
-        conditions.append("COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) > 0")
-    elif balance_filter == 'Cleared Only':
-        conditions.append("COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) <= 0")
-    
-    if conditions:
-        query += " AND " + " AND ".join(conditions)
-    
-    query += """
-        GROUP BY s.student_id, s.student_code, s.first_name, s.last_name, s.class
-        ORDER BY balance DESC, s.class, s.last_name
-    """
-    
-    data = db.execute_query(query, values, fetch=True)
+    from models.finance import FinancialManager
+    balances = FinancialManager.get_student_balances(
+        academic_year=academic_year,
+        term=config.Config.CURRENT_TERM
+    )
+
+    data = []
+    for row in balances:
+        if class_filter != 'All' and row.get('class') != class_filter:
+            continue
+
+        balance = float(row.get('balance') or 0)
+        if balance_filter == 'With Balance Only' and balance <= 0:
+            continue
+        if balance_filter == 'Cleared Only' and balance > 0:
+            continue
+
+        data.append({
+            'student_code': row.get('student_code'),
+            'student_name': row.get('student_name'),
+            'class': row.get('class'),
+            'total_due': float(row.get('total_due') or 0) + float(row.get('carried_balance') or 0),
+            'total_paid': float(row.get('total_paid') or 0),
+            'balance': balance
+        })
+
+    data.sort(key=lambda r: (-float(r.get('balance') or 0), r.get('class') or '', r.get('student_name') or ''))
     
     # Calculate totals
     total_due = sum(float(row['total_due']) for row in data) if data else 0

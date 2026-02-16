@@ -806,48 +806,37 @@ class ReportsTab:
     
     def get_student_fees_data(self, params, preview=False):
         """Get student fees data"""
-        query = """
-            SELECT 
-                s.student_id,
-                s.student_code,
-                CONCAT(s.first_name, ' ', s.last_name) as student_name,
-                s.class,
-                COALESCE(SUM(ft.amount), 0) as total_due,
-                COALESCE(SUM(sf.amount_paid), 0) as total_paid,
-                COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
-            FROM students s
-            CROSS JOIN fee_types ft
-            LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-            WHERE s.is_active = 1 
-                AND ft.academic_year = %s
-        """
-        
-        conditions = []
-        values = [params['academic_year']]
-        
-        # Add class filter
-        if params['class_filter'] != 'All':
-            conditions.append("s.class = %s")
-            values.append(params['class_filter'])
-        
-        # Add balance filter
-        if params['balance_filter'] == 'With Balance Only':
-            conditions.append("COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) > 0")
-        elif params['balance_filter'] == 'Cleared Only':
-            conditions.append("COALESCE(SUM(ft.amount), 0) - COALESCE(SUM(sf.amount_paid), 0) <= 0")
-        
-        if conditions:
-            query += " AND " + " AND ".join(conditions)
-        
-        query += """
-            GROUP BY s.student_id, s.student_code, s.first_name, s.last_name, s.class
-            ORDER BY balance DESC, s.class, s.last_name
-        """
-        
+        from models.finance import FinancialManager
+        balances = FinancialManager.get_student_balances(
+            academic_year=params['academic_year'],
+            term=config.Config.CURRENT_TERM
+        )
+
+        out = []
+        for row in balances:
+            if params['class_filter'] != 'All' and row.get('class') != params['class_filter']:
+                continue
+
+            balance = float(row.get('balance') or 0)
+            if params['balance_filter'] == 'With Balance Only' and balance <= 0:
+                continue
+            if params['balance_filter'] == 'Cleared Only' and balance > 0:
+                continue
+
+            out.append({
+                'student_id': row.get('student_id'),
+                'student_code': row.get('student_code'),
+                'student_name': row.get('student_name'),
+                'class': row.get('class'),
+                'total_due': float(row.get('total_due') or 0) + float(row.get('carried_balance') or 0),
+                'total_paid': float(row.get('total_paid') or 0),
+                'balance': balance
+            })
+
+        out.sort(key=lambda r: (-float(r.get('balance') or 0), r.get('class') or '', r.get('student_name') or ''))
         if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
-            query += f" LIMIT {config.Config.PREVIEW_LIMIT}"
-        
-        return db.execute_query(query, values, fetch=True)
+            return out[:config.Config.PREVIEW_LIMIT]
+        return out
     
     def get_student_list_data(self, params, preview=False):
         """Get student list data"""

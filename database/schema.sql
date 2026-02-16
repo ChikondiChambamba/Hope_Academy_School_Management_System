@@ -106,6 +106,36 @@ CREATE TABLE student_fee_exemptions (
     INDEX idx_student_exemptions (student_id)
 );
 
+-- Term changes history table
+CREATE TABLE term_changes (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    academic_year VARCHAR(32) NOT NULL,
+    previous_term VARCHAR(32),
+    term_name VARCHAR(32) NOT NULL,
+    start_date DATE,
+    rollover_processed BOOLEAN DEFAULT FALSE,
+    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_term_change_year_term (academic_year, term_name)
+);
+
+-- Stores opening balance carried into a new term per student
+CREATE TABLE student_term_fee_rollovers (
+    rollover_id INT PRIMARY KEY AUTO_INCREMENT,
+    student_id INT NOT NULL,
+    from_academic_year VARCHAR(32) NOT NULL,
+    from_term VARCHAR(32) NOT NULL,
+    to_academic_year VARCHAR(32) NOT NULL,
+    to_term VARCHAR(32) NOT NULL,
+    carried_balance DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    source_total_due DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    source_total_paid DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_student_to_term (student_id, to_academic_year, to_term),
+    INDEX idx_rollover_target (to_academic_year, to_term),
+    INDEX idx_rollover_source (from_academic_year, from_term),
+    FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
+);
+
 -- Teacher Salary Advances: track advances given to teachers
 CREATE TABLE teacher_salary_advances (
     advance_id INT PRIMARY KEY AUTO_INCREMENT,
@@ -439,6 +469,26 @@ INSERT INTO student_classes (student_id, class_id, academic_year) VALUES
 (3, 4, '2026'),
 (4, 5, '2026'),
 (5, 8, '2026');
+
+-- Audit Log Table
+CREATE TABLE audit_log (
+    log_id INT PRIMARY KEY AUTO_INCREMENT,
+    timestamp DATETIME NOT NULL,
+    action VARCHAR(100) NOT NULL,
+    user VARCHAR(100),
+    entity_type VARCHAR(50),
+    entity_id VARCHAR(50),
+    status VARCHAR(20) DEFAULT 'SUCCESS',
+    details JSON,
+    error_message TEXT,
+    ip_address VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX idx_timestamp (timestamp),
+    INDEX idx_user (user),
+    INDEX idx_action (action),
+    INDEX idx_entity (entity_type, entity_id)
+);
 
 -- Sample data removed for a clean production-like schema. To re-add
 -- the sample data, run a separate provisioning script or execute the

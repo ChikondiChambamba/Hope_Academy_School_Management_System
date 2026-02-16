@@ -183,6 +183,8 @@ class FeePayment:
         max_attempts = 5
         while attempts < max_attempts:
             try:
+                from utils.audit_logger import log_payment_action
+                
                 # Generate receipt number if not provided
                 if not self.receipt_number:
                     self.receipt_number = self.generate_receipt_number()
@@ -204,6 +206,11 @@ class FeePayment:
                 )
 
                 self.fee_id = db.execute_query(query, params)
+                
+                # Log the payment action
+                log_payment_action('CREATE', self.fee_id, 
+                                 f'Payment of {self.amount_paid} recorded for student {self.student_id}',
+                                 {'receipt_number': self.receipt_number, 'method': self.payment_method})
 
                 # After successful payment, apply business rules:
                 # - If this payment is for a tuition fee, exempt other tuition fee types for this student.
@@ -239,6 +246,11 @@ class FeePayment:
                     # create a new receipt and try again
                     self.receipt_number = self.generate_receipt_number()
                     continue
+                
+                # Log the failed action
+                from utils.audit_logger import log_payment_action
+                log_payment_action('CREATE', 0, f'Payment failed: {msg}', None, 'FAILED')
+                
                 return False, f"Database error: {msg}"
 
         return False, "Database error: failed to generate unique receipt after retries"
@@ -574,6 +586,44 @@ class Expense:
 
 class FinancialManager:
     """Manager for financial operations"""
+
+    @staticmethod
+    def _ensure_term_rollover_tables() -> None:
+        """Ensure tables used by term rollover logic exist."""
+        db.execute_query(
+            """
+            CREATE TABLE IF NOT EXISTS term_changes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                academic_year VARCHAR(32) NOT NULL,
+                previous_term VARCHAR(32),
+                term_name VARCHAR(32) NOT NULL,
+                start_date DATE,
+                rollover_processed TINYINT(1) DEFAULT 0,
+                changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_term_change_year_term (academic_year, term_name)
+            ) ENGINE=InnoDB
+            """
+        )
+        db.execute_query(
+            """
+            CREATE TABLE IF NOT EXISTS student_term_fee_rollovers (
+                rollover_id INT AUTO_INCREMENT PRIMARY KEY,
+                student_id INT NOT NULL,
+                from_academic_year VARCHAR(32) NOT NULL,
+                from_term VARCHAR(32) NOT NULL,
+                to_academic_year VARCHAR(32) NOT NULL,
+                to_term VARCHAR(32) NOT NULL,
+                carried_balance DECIMAL(12,2) NOT NULL DEFAULT 0,
+                source_total_due DECIMAL(12,2) NOT NULL DEFAULT 0,
+                source_total_paid DECIMAL(12,2) NOT NULL DEFAULT 0,
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_student_to_term (student_id, to_academic_year, to_term),
+                INDEX idx_rollover_target (to_academic_year, to_term),
+                INDEX idx_rollover_source (from_academic_year, from_term),
+                FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
+            ) ENGINE=InnoDB
+            """
+        )
     
     @staticmethod
     def get_financial_summary(start_date: date = None, end_date: date = None) -> Dict:
@@ -596,14 +646,11 @@ class FinancialManager:
         
         # Get student balances
         try:
-            query = """
-                SELECT 
-                    SUM(balance) as total_outstanding
-                FROM student_fee_summary
-                WHERE academic_year = %s
-            """
-            result = db.execute_query(query, (config.Config.CURRENT_ACADEMIC_YEAR,), fetch=True)
-            total_outstanding = result[0]['total_outstanding'] if result else 0
+            balances = FinancialManager.get_student_balances(
+                config.Config.CURRENT_ACADEMIC_YEAR,
+                term=config.Config.CURRENT_TERM
+            )
+            total_outstanding = sum(float(r.get('balance') or 0) for r in balances if float(r.get('balance') or 0) > 0)
         except:
             total_outstanding = 0
         
@@ -627,35 +674,19 @@ class FinancialManager:
         }
     
     @staticmethod
-    def get_student_balances(academic_year: str = None) -> List[Dict]:
-        """Get all student balances"""
+    def get_student_balances(academic_year: str = None, fee_type_id: int = None, term: str = None) -> List[Dict]:
+        """Get student balances for a term, including carried balances from previous term."""
         if not academic_year:
             academic_year = config.Config.CURRENT_ACADEMIC_YEAR
-        # Compute balances per student with term awareness and carryover of previous-term unpaid amounts
+        if not term:
+            term = config.Config.CURRENT_TERM
         try:
-            current_term = getattr(config.Config, 'CURRENT_TERM', 'Term 1')
-            terms = getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3'])
-            # determine earlier terms
-            try:
-                idx = terms.index(current_term)
-            except ValueError:
-                idx = 0
-            earlier_terms = terms[:idx]
-
-            # Build SQL: due for current term, paid for current term, carryover from earlier terms
-            # Prepare placeholders for earlier terms if any
-            params = [academic_year, current_term, academic_year, current_term, academic_year]
-            if earlier_terms:
-                placeholders = ','.join(['%s'] * len(earlier_terms))
-                # for carryover we will need the placeholders twice (fee_types and student_fees)
-                carry_terms_placeholders = placeholders
-                params.extend(earlier_terms)
-                params.append(academic_year)
-                params.extend(earlier_terms)
-            else:
-                carry_terms_placeholders = 'NULL'
-                params.append(academic_year)
-                params.append(None)
+            FinancialManager._ensure_term_rollover_tables()
+            fee_filter = ""
+            params = [academic_year, term]
+            if fee_type_id:
+                fee_filter = "AND ft.fee_type_id = %s"
+                params.append(fee_type_id)
 
             query = f"""
                 SELECT
@@ -663,41 +694,142 @@ class FinancialManager:
                     s.student_code,
                     CONCAT(s.first_name, ' ', s.last_name) as student_name,
                     s.class,
-                    -- current term due
-                    COALESCE((SELECT SUM(ft.amount) FROM fee_types ft WHERE ft.academic_year = %s AND ft.term = %s AND ft.is_required = 1), 0) as total_due_current,
-                    -- current term paid
-                    COALESCE((SELECT SUM(sf.amount_paid) FROM student_fees sf JOIN fee_types ft2 ON sf.fee_type_id = ft2.fee_type_id WHERE sf.student_id = s.student_id AND ft2.academic_year = %s AND ft2.term = %s), 0) as total_paid_current,
-                    -- carryover from earlier terms in same academic year
-                    (
-                      COALESCE((SELECT SUM(ft3.amount) FROM fee_types ft3 WHERE ft3.academic_year = %s AND ft3.term IN ({carry_terms_placeholders})), 0)
-                      - COALESCE((SELECT SUM(sf2.amount_paid) FROM student_fees sf2 JOIN fee_types ft4 ON sf2.fee_type_id = ft4.fee_type_id WHERE sf2.student_id = s.student_id AND ft4.academic_year = %s AND ft4.term IN ({carry_terms_placeholders})), 0)
-                    ) as carryover
+                    COALESCE(SUM(
+                        CASE
+                            WHEN sfe.exemption_id IS NOT NULL THEN 0
+                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                            ELSE ft.amount
+                        END
+                    ), 0) as total_fees,
+                    COALESCE(SUM(sf.amount_paid), 0) as amount_paid,
+                    COALESCE(cr.carried_balance, 0) as carried_balance,
+                    COALESCE(SUM(
+                        CASE
+                            WHEN sfe.exemption_id IS NOT NULL THEN 0
+                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                            ELSE ft.amount
+                        END
+                    ), 0) - COALESCE(SUM(sf.amount_paid), 0) + COALESCE(cr.carried_balance, 0) as balance
                 FROM students s
+                CROSS JOIN fee_types ft
+                LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
+                LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
+                LEFT JOIN (
+                    SELECT student_id, COALESCE(SUM(carried_balance), 0) as carried_balance
+                    FROM student_term_fee_rollovers
+                    WHERE to_academic_year = %s AND to_term = %s
+                    GROUP BY student_id
+                ) cr ON cr.student_id = s.student_id
                 WHERE s.is_active = 1
-                ORDER BY (total_due_current - total_paid_current + carryover) DESC, s.class, s.last_name
+                  AND ft.academic_year = %s
+                  AND (ft.term = %s OR ft.term IS NULL OR ft.term = '')
+                  {fee_filter}
+                GROUP BY s.student_id, s.student_code, s.first_name, s.last_name, s.class, cr.carried_balance
+                ORDER BY s.class, s.last_name, s.first_name
             """
 
-            results = db.execute_query(query, tuple(params), fetch=True)
-            # compute final fields expected by UI: total_due, total_paid, balance
+            exec_params = [academic_year, term] + params
+            results = db.execute_query(query, tuple(exec_params), fetch=True)
+
             out = []
-            for r in results:
-                total_due_current = float(r.get('total_due_current') or 0)
-                total_paid_current = float(r.get('total_paid_current') or 0)
-                carryover = float(r.get('carryover') or 0)
-                balance = (total_due_current - total_paid_current) + carryover
+            for row in results:
+                balance = float(row.get('balance') or 0)
+                total_fees = float(row.get('total_fees') or 0)
+                amount_paid = float(row.get('amount_paid') or 0)
+                carried_balance = float(row.get('carried_balance') or 0)
                 out.append({
-                    'student_id': r.get('student_id'),
-                    'student_code': r.get('student_code'),
-                    'student_name': r.get('student_name'),
-                    'class': r.get('class'),
-                    'total_due': total_due_current,
-                    'total_paid': total_paid_current,
-                    'balance': balance,
-                    'carryover': carryover
+                    'student_id': row.get('student_id'),
+                    'student_code': row.get('student_code'),
+                    'student_name': row.get('student_name'),
+                    'class': row.get('class'),
+                    # Keep both legacy and newer field names for compatibility
+                    'total_due': total_fees,
+                    'total_fees': total_fees,
+                    'total_paid': amount_paid,
+                    'amount_paid': amount_paid,
+                    'carried_balance': carried_balance,
+                    'balance': balance
                 })
             return out
         except Exception:
             return []
+
+    @staticmethod
+    def get_student_balance(student_id: int, academic_year: str = None, fee_type_id: int = None, term: str = None) -> Dict:
+        """Get totals for a single student for a term, including carried balance."""
+        if not academic_year:
+            academic_year = config.Config.CURRENT_ACADEMIC_YEAR
+        if not term:
+            term = config.Config.CURRENT_TERM
+        try:
+            FinancialManager._ensure_term_rollover_tables()
+            # Get student class for tuition overrides
+            sres = db.execute_query("SELECT class FROM students WHERE student_id=%s", (student_id,), fetch=True)
+            student_class = sres[0]['class'] if sres else ''
+
+            fee_filter = ""
+            params = [academic_year, term]
+            if fee_type_id:
+                fee_filter = "AND ft.fee_type_id = %s"
+                params.append(fee_type_id)
+
+            query = f"""
+                SELECT
+                    COALESCE(SUM(
+                        CASE
+                            WHEN sfe.exemption_id IS NOT NULL THEN 0
+                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(%s) LIKE '%%nursery%%' OR LOWER(%s) LIKE '%%reception%%') THEN 45000
+                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                            ELSE ft.amount
+                        END
+                    ), 0) as total_expected,
+                    COALESCE(SUM(sf.amount_paid), 0) as total_paid,
+                    COALESCE(cr.carried_balance, 0) as carried_balance
+                FROM fee_types ft
+                LEFT JOIN student_fee_exemptions sfe ON sfe.fee_type_id = ft.fee_type_id AND sfe.student_id = %s
+                LEFT JOIN student_fees sf ON sf.fee_type_id = ft.fee_type_id AND sf.student_id = %s
+                LEFT JOIN (
+                    SELECT student_id, COALESCE(SUM(carried_balance), 0) as carried_balance
+                    FROM student_term_fee_rollovers
+                    WHERE to_academic_year = %s AND to_term = %s AND student_id = %s
+                    GROUP BY student_id
+                ) cr ON cr.student_id = %s
+                WHERE ft.academic_year = %s
+                  AND (ft.term = %s OR ft.term IS NULL OR ft.term = '')
+                  {fee_filter}
+            """
+
+            # params for LOWER(class) replacement plus student params
+            exec_params = [
+                student_class,
+                student_class,
+                student_id,
+                student_id,
+                academic_year,
+                term,
+                student_id,
+                student_id
+            ] + params
+            res = db.execute_query(query, tuple(exec_params), fetch=True)
+            row = res[0] if res else {'total_expected': 0, 'total_paid': 0, 'carried_balance': 0}
+            total_expected = float(row.get('total_expected') or 0)
+            total_paid = float(row.get('total_paid') or 0)
+            carried_balance = float(row.get('carried_balance') or 0)
+            balance = total_expected - total_paid + carried_balance
+            return {
+                'student_id': student_id,
+                'total_expected': total_expected,
+                'total_paid': total_paid,
+                'carried_balance': carried_balance,
+                'balance': balance
+            }
+        except Exception:
+            return {'student_id': student_id, 'total_expected': 0, 'total_paid': 0, 'carried_balance': 0, 'balance': 0}
 
     @staticmethod
     def get_collected_by_fee_type(start_date: date = None, end_date: date = None) -> List[Dict[str, Any]]:
@@ -768,44 +900,104 @@ class FinancialManager:
 
     @staticmethod
     def start_new_term(new_term: str, term_start_date: str = None):
-        """Start a new term: update current term, persist settings, and ensure balances carry over.
-
-        Business rules implemented:
-        - Update `config.Config.CURRENT_TERM` and `TERM_START_DATE`, persist settings.
-        - Do not remove historical payments; previous term data remains available.
-        - Carry over unpaid balances by leaving student_fees and fee_types unchanged; balance queries will include earlier unpaid amounts.
-        - Optionally emit a lightweight record in `term_changes` table (best-effort; will create table if missing).
-        """
+        """Start a new term and persist tuition rollover balances into DB."""
         try:
-            # Update config
+            if not new_term:
+                return False
+
+            previous_term = config.Config.CURRENT_TERM
+            academic_year = config.Config.CURRENT_ACADEMIC_YEAR
+
+            FinancialManager._ensure_term_rollover_tables()
+
+            rollover_processed = 0
+            # Only compute rollover when term actually changes.
+            if previous_term and previous_term != new_term:
+                rollover_query = """
+                    INSERT INTO student_term_fee_rollovers (
+                        student_id,
+                        from_academic_year,
+                        from_term,
+                        to_academic_year,
+                        to_term,
+                        carried_balance,
+                        source_total_due,
+                        source_total_paid
+                    )
+                    SELECT
+                        s.student_id,
+                        %s AS from_academic_year,
+                        %s AS from_term,
+                        %s AS to_academic_year,
+                        %s AS to_term,
+                        GREATEST(
+                            COALESCE(SUM(
+                                CASE
+                                    WHEN sfe.exemption_id IS NOT NULL THEN 0
+                                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                                    ELSE 0
+                                END
+                            ), 0) - COALESCE(SUM(sf.amount_paid), 0),
+                            0
+                        ) AS carried_balance,
+                        COALESCE(SUM(
+                            CASE
+                                WHEN sfe.exemption_id IS NOT NULL THEN 0
+                                WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                                WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                                ELSE 0
+                            END
+                        ), 0) AS source_total_due,
+                        COALESCE(SUM(sf.amount_paid), 0) AS source_total_paid
+                    FROM students s
+                    LEFT JOIN fee_types ft
+                        ON ft.academic_year = %s
+                        AND ft.term = %s
+                        AND LOWER(ft.fee_name) LIKE '%%tuition%%'
+                    LEFT JOIN student_fee_exemptions sfe
+                        ON sfe.student_id = s.student_id
+                        AND sfe.fee_type_id = ft.fee_type_id
+                    LEFT JOIN student_fees sf
+                        ON sf.student_id = s.student_id
+                        AND sf.fee_type_id = ft.fee_type_id
+                    WHERE s.is_active = 1
+                    GROUP BY s.student_id
+                    ON DUPLICATE KEY UPDATE
+                        from_academic_year = VALUES(from_academic_year),
+                        from_term = VALUES(from_term),
+                        carried_balance = VALUES(carried_balance),
+                        source_total_due = VALUES(source_total_due),
+                        source_total_paid = VALUES(source_total_paid),
+                        computed_at = CURRENT_TIMESTAMP
+                """
+                db.execute_query(
+                    rollover_query,
+                    (
+                        academic_year,
+                        previous_term,
+                        academic_year,
+                        new_term,
+                        academic_year,
+                        previous_term
+                    )
+                )
+                rollover_processed = 1
+
+            # Record term change in DB for audit/history.
+            db.execute_query(
+                """
+                INSERT INTO term_changes (academic_year, previous_term, term_name, start_date, rollover_processed)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (academic_year, previous_term, new_term, term_start_date, rollover_processed)
+            )
+
+            # Update config after DB side has been applied.
             config.Config.CURRENT_TERM = new_term
             if term_start_date:
                 config.Config.TERM_START_DATE = term_start_date
             config.Config.save_user_settings()
-
-            # Record the term change in DB for audit/history
-            try:
-                # Create table if not exists
-                db.execute_query(
-                    """
-                    CREATE TABLE IF NOT EXISTS term_changes (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        academic_year VARCHAR(32),
-                        term_name VARCHAR(32),
-                        start_date DATE,
-                        changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    ) ENGINE=InnoDB
-                    """
-                )
-                # Insert record
-                db.execute_query(
-                    "INSERT INTO term_changes (academic_year, term_name, start_date) VALUES (%s, %s, %s)",
-                    (config.Config.CURRENT_ACADEMIC_YEAR, new_term, term_start_date)
-                )
-            except Exception:
-                # Non-fatal if DB can't record term change
-                pass
-
             return True
         except Exception:
             return False

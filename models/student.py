@@ -100,6 +100,8 @@ class Student:
             return False, message
         
         try:
+            from utils.audit_logger import log_student_action
+            
             # Prepare data for database
             student_data = self.to_dict()
             
@@ -133,6 +135,10 @@ class Student:
                 )
                 
                 db.execute_query(query, params)
+                
+                # Log the update action
+                log_student_action('UPDATE', self.student_id, 'Student updated')
+                
                 return True, "Student updated successfully"
                 
             else:  # Insert new student
@@ -172,9 +178,16 @@ class Student:
                 
                 student_id = db.execute_query(query, params)
                 self.student_id = student_id
+                
+                # Log the creation action
+                log_student_action('CREATE', student_id, f'Student {student_data["first_name"]} {student_data["last_name"]} created')
+                
                 return True, f"Student added successfully with ID: {student_id}"
                 
         except Exception as e:
+            from utils.audit_logger import log_student_action
+            # Log the failed action
+            log_student_action('CREATE' if not self.student_id else 'UPDATE', self.student_id, f'Error: {str(e)}', 'FAILED')
             return False, f"Database error: {str(e)}"
     
     def delete(self) -> tuple[bool, str]:
@@ -236,7 +249,11 @@ class Student:
         """Get detailed fee information for student"""
         try:
             query = Queries.GET_STUDENT_FEE_DETAILS
-            return db.execute_query(query, (self.student_id, config.Config.CURRENT_ACADEMIC_YEAR), fetch=True)
+            return db.execute_query(
+                query,
+                (self.student_id, config.Config.CURRENT_ACADEMIC_YEAR, config.Config.CURRENT_TERM),
+                fetch=True
+            )
         except:
             return []
     
@@ -458,9 +475,12 @@ class StudentManager:
         else:
             tuition_amount = grade_tuition
 
-        # Retrieve fee types for this academic year and adjust tuition fee if present
+        # Retrieve fee types for current term in this academic year.
         from models.finance import FeeType
-        fee_types = FeeType.get_all()
+        fee_types = [
+            ft for ft in FeeType.get_all()
+            if (not getattr(ft, 'term', None)) or ft.term == config.Config.CURRENT_TERM
+        ]
 
         # Load any exemptions for this student (waived fee types)
         try:
@@ -475,11 +495,9 @@ class StudentManager:
         paid_tuition_fee_type_ids = set()
         for fd in fee_details:
             if fd.get('fee_name') and 'tuition' in fd.get('fee_name').lower() and float(fd.get('paid_amount', 0)) > 0:
-                # map fee_name to fee_type_id by looking up in fee_types list
-                for ft in fee_types:
-                    if ft.fee_name == fd.get('fee_name'):
-                        paid_tuition_fee_type_ids.add(ft.fee_type_id)
-                        break
+                fid = fd.get('fee_type_id')
+                if fid is not None:
+                    paid_tuition_fee_type_ids.add(fid)
 
         for ft in fee_types:
             # skip exempted fee types
@@ -504,7 +522,7 @@ class StudentManager:
             # Find paid amount for this fee in fee_details
             paid = 0.0
             for fd in fee_details:
-                if fd.get('fee_name') == ft.fee_name:
+                if fd.get('fee_type_id') == ft.fee_type_id:
                     paid = float(fd.get('paid_amount', 0))
                     break
 
@@ -519,6 +537,31 @@ class StudentManager:
             total_due += amount
 
         total_paid = sum(d['paid_amount'] for d in adjusted_fee_details)
+        # Add carried-over balance from the previous term into this term's opening balance.
+        try:
+            carry_q = """
+                SELECT COALESCE(SUM(carried_balance), 0) as carried_balance
+                FROM student_term_fee_rollovers
+                WHERE student_id = %s AND to_academic_year = %s AND to_term = %s
+            """
+            carry_res = db.execute_query(
+                carry_q,
+                (student_id, config.Config.CURRENT_ACADEMIC_YEAR, config.Config.CURRENT_TERM),
+                fetch=True
+            )
+            carried_balance = float(carry_res[0].get('carried_balance', 0) or 0) if carry_res else 0.0
+        except Exception:
+            carried_balance = 0.0
+
+        if carried_balance > 0:
+            adjusted_fee_details.append({
+                'fee_name': 'Carried Balance',
+                'expected_amount': carried_balance,
+                'paid_amount': 0.0,
+                'balance': carried_balance
+            })
+            total_due += carried_balance
+
         balance = total_due - total_paid
 
         summary = {
@@ -528,6 +571,7 @@ class StudentManager:
             'total_due': total_due,
             'total_paid': total_paid,
             'balance': balance,
+            'carried_balance': carried_balance,
             'fee_details': adjusted_fee_details,
             'payment_history': StudentManager.get_payment_history(student_id)
         }

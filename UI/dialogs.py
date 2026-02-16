@@ -1681,6 +1681,7 @@ class PreferencesDialog(BaseDialog):
     
     def on_ok(self):
         """Save preferences"""
+        previous_term = getattr(config.Config, 'CURRENT_TERM', None)
         # Update config
         config.Config.DB_CONFIG['host'] = self.host_var.get()
         config.Config.DB_CONFIG['user'] = self.user_var.get()
@@ -1697,7 +1698,16 @@ class PreferencesDialog(BaseDialog):
         term_start = self.term_start_var.get().strip()
         config.Config.TERM_START_DATE = term_start if term_start else None
         current_term = self.current_term_var.get().strip()
-        if current_term:
+        if current_term and current_term != previous_term:
+            try:
+                from models.finance import FinancialManager
+                if not FinancialManager.start_new_term(current_term, term_start_date=(term_start if term_start else None)):
+                    messagebox.showerror("Error", "Failed to start new term and compute fee rollover balances.")
+                    return
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to start new term: {str(e)}")
+                return
+        elif current_term:
             config.Config.CURRENT_TERM = current_term
         # Persist user settings
         try:
@@ -1858,3 +1868,407 @@ class DateRangeDialog(BaseDialog):
             return
         self.result = True
         self.dialog.destroy()
+
+
+class AuditLogViewer(BaseDialog):
+    """Dialog for viewing system audit logs"""
+    
+    def __init__(self, parent):
+        from utils.audit_logger import AuditLogger
+        
+        self.audit_logger = AuditLogger()
+        super().__init__(parent, "Audit Log Viewer", width=1000, height=600)
+        self.create_widgets()
+    
+    def create_widgets(self):
+        """Create audit log viewer widgets"""
+        # Search frame
+        search_frame = ttk.LabelFrame(self.main_frame, text="Search & Filter", padding="10")
+        search_frame.pack(fill='x', pady=(0, 10))
+        
+        # Search fields
+        ttk.Label(search_frame, text="User:").grid(row=0, column=0, sticky='w', padx=(0, 5))
+        self.user_var = tk.StringVar()
+        ttk.Entry(search_frame, textvariable=self.user_var, width=15).grid(row=0, column=1, sticky='w', padx=(0, 15))
+        
+        ttk.Label(search_frame, text="Action:").grid(row=0, column=2, sticky='w', padx=(0, 5))
+        self.action_var = tk.StringVar()
+        action_combo = ttk.Combobox(search_frame, textvariable=self.action_var, width=15, state='readonly')
+        actions = ['ALL', 'LOGIN', 'LOGOUT', 'CREATE', 'UPDATE', 'DELETE', 'VIEW', 'PAYMENT', 'ATTENDANCE']
+        action_combo['values'] = actions
+        action_combo.set('ALL')
+        action_combo.grid(row=0, column=3, sticky='w', padx=(0, 15))
+        
+        ttk.Label(search_frame, text="Date Range:").grid(row=0, column=4, sticky='w', padx=(0, 5))
+        self.days_var = tk.StringVar(value="7")
+        days_spin = ttk.Spinbox(search_frame, from_=1, to=365, textvariable=self.days_var, width=8)
+        days_spin.grid(row=0, column=5, sticky='w', padx=(0, 5))
+        ttk.Label(search_frame, text="days").grid(row=0, column=6, sticky='w', padx=(0, 15))
+        
+        # Search button
+        ttk.Button(search_frame, text="Search", command=self.search_logs).grid(row=0, column=7, padx=(5, 0))
+        
+        # Results frame with treeview
+        results_frame = ttk.LabelFrame(self.main_frame, text="Audit Logs", padding="5")
+        results_frame.pack(fill='both', expand=True, pady=(0, 10))
+        
+        # Create scrollbars
+        vsb = ttk.Scrollbar(results_frame, orient='vertical')
+        hsb = ttk.Scrollbar(results_frame, orient='horizontal')
+        
+        # Create treeview
+        columns = ('Timestamp', 'User', 'Action', 'Entity', 'Status')
+        self.tree = ttk.Treeview(
+            results_frame,
+            columns=columns,
+            height=20,
+            yscrollcommand=vsb.set,
+            xscrollcommand=hsb.set
+        )
+        vsb.config(command=self.tree.yview)
+        hsb.config(command=self.tree.xview)
+        
+        # Define headings
+        self.tree.heading('#0', text='ID')
+        self.tree.column('#0', width=50)
+        
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=150)
+        
+        self.tree.pack(side='left', fill='both', expand=True)
+        vsb.pack(side='right', fill='y')
+        hsb.pack(side='bottom', fill='x')
+        
+        # Details frame
+        details_frame = ttk.LabelFrame(self.main_frame, text="Details", padding="5")
+        details_frame.pack(fill='x', pady=(0, 10))
+        
+        self.details_text = tk.Text(details_frame, height=4, width=80, state='disabled')
+        self.details_text.pack(fill='both', expand=True)
+        
+        # Bind selection
+        self.tree.bind('<<TreeviewSelect>>', self.on_select_log)
+        
+        # Button frame
+        button_frame = ttk.Frame(self.main_frame)
+        button_frame.pack(fill='x')
+        
+        ttk.Button(button_frame, text="Export to CSV", command=self.export_logs).pack(side='left', padx=(0, 5))
+        ttk.Button(button_frame, text="Clear Logs", command=self.clear_logs).pack(side='left', padx=(0, 5))
+        ttk.Button(button_frame, text="Close", command=self.on_cancel).pack(side='right')
+        
+        # Load initial data
+        self.search_logs()
+    
+    def search_logs(self):
+        """Search and filter audit logs"""
+        try:
+            # Clear existing items
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+            
+            user = self.user_var.get().strip() if self.user_var.get().strip() else None
+            action = self.action_var.get() if self.action_var.get() != 'ALL' else None
+            days = int(self.days_var.get())
+            
+            # Get logs from database
+            logs = self.audit_logger.get_user_actions(user, limit=1000)
+            
+            # Filter by action if specified
+            if action:
+                logs = [l for l in logs if l.get('action') == action]
+            
+            # Filter by date range
+            from datetime import datetime, timedelta
+            cutoff_date = datetime.now() - timedelta(days=days)
+            filtered_logs = []
+            
+            for log in logs:
+                try:
+                    log_date = datetime.fromisoformat(log.get('timestamp', ''))
+                    if log_date >= cutoff_date:
+                        filtered_logs.append(log)
+                except:
+                    filtered_logs.append(log)
+            
+            # Populate treeview
+            for idx, log in enumerate(filtered_logs):
+                timestamp = log.get('timestamp', 'N/A')[:19]  # Truncate to date time
+                user = log.get('user', 'System')
+                action = log.get('action', 'UNKNOWN')
+                entity = f"{log.get('entity_type', 'N/A')}#{log.get('entity_id', 'N/A')}"
+                status = log.get('status', 'UNKNOWN')
+                
+                self.tree.insert('', 'end', text=str(log.get('log_id', idx)), 
+                               values=(timestamp, user, action, entity, status),
+                               tags=('data',))
+            
+            messagebox.showinfo('Search Complete', f'Found {len(filtered_logs)} audit log entries')
+        
+        except Exception as e:
+            messagebox.showerror('Error', f'Failed to search logs: {str(e)}')
+    
+    def on_select_log(self, event):
+        """Display selected log details"""
+        selection = self.tree.selection()
+        if not selection:
+            return
+        
+        try:
+            item = selection[0]
+            values = self.tree.item(item)['values']
+            
+            # Display details
+            details = f"""
+Timestamp: {values[0]}
+User: {values[1]}
+Action: {values[2]}
+Entity: {values[3]}
+Status: {values[4]}
+            """
+            
+            self.details_text.config(state='normal')
+            self.details_text.delete(1.0, 'end')
+            self.details_text.insert(1.0, details)
+            self.details_text.config(state='disabled')
+        
+        except Exception as e:
+            messagebox.showerror('Error', f'Failed to load details: {str(e)}')
+    
+    def export_logs(self):
+        """Export logs to CSV"""
+        try:
+            from tkinter import filedialog
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+            
+            if not file_path:
+                return
+            
+            # Get all logs
+            logs = self.audit_logger.get_user_actions(limit=10000)
+            
+            # Write to CSV
+            import csv
+            with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=['log_id', 'timestamp', 'user', 'action', 
+                                                        'entity_type', 'entity_id', 'status', 'details'])
+                writer.writeheader()
+                writer.writerows(logs)
+            
+            messagebox.showinfo('Success', f'Logs exported to {file_path}')
+        
+        except Exception as e:
+            messagebox.showerror('Error', f'Failed to export logs: {str(e)}')
+    
+    def clear_logs(self):
+        """Clear audit logs with confirmation"""
+        if messagebox.askyesno('Confirm', 'Are you sure you want to clear all audit logs?'):
+            try:
+                # Note: This would require implementing a delete method in audit_logger
+                messagebox.showinfo('Info', 'Logs clearing not implemented. Contact admin.')
+            except Exception as e:
+                messagebox.showerror('Error', f'Failed to clear logs: {str(e)}')
+    
+    def on_ok(self):
+        """Override to just close"""
+        self.dialog.destroy()
+    
+    def on_cancel(self):
+        """Close the dialog"""
+        self.dialog.destroy()
+
+
+class EmailConfigurationDialog(BaseDialog):
+    """Dialog for configuring email notification settings"""
+    
+    def __init__(self, parent):
+        super().__init__(parent, "Email Configuration", width=600, height=500)
+        self.create_widgets()
+        self.load_settings()
+    
+    def create_widgets(self):
+        """Create email configuration widgets"""
+        # Email Server Settings
+        server_frame = ttk.LabelFrame(self.main_frame, text="Email Server Settings", padding="10")
+        server_frame.pack(fill='x', pady=(0, 10))
+        
+        # SMTP Server
+        ttk.Label(server_frame, text="SMTP Server:").grid(row=0, column=0, sticky='w', pady=5)
+        self.smtp_server_var = tk.StringVar()
+        ttk.Entry(server_frame, textvariable=self.smtp_server_var, width=40).grid(row=0, column=1, sticky='ew', padx=5)
+        
+        # SMTP Port
+        ttk.Label(server_frame, text="SMTP Port:").grid(row=1, column=0, sticky='w', pady=5)
+        self.smtp_port_var = tk.StringVar(value="587")
+        ttk.Spinbox(server_frame, from_=1, to=65535, textvariable=self.smtp_port_var, width=10).grid(row=1, column=1, sticky='w', padx=5)
+        
+        # Use TLS
+        self.use_tls_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(server_frame, text="Use TLS", variable=self.use_tls_var).grid(row=2, column=0, columnspan=2, sticky='w', pady=5)
+        
+        # Sender Email
+        ttk.Label(server_frame, text="Sender Email:").grid(row=3, column=0, sticky='w', pady=5)
+        self.sender_email_var = tk.StringVar()
+        ttk.Entry(server_frame, textvariable=self.sender_email_var, width=40).grid(row=3, column=1, sticky='ew', padx=5)
+        
+        # Sender Name
+        ttk.Label(server_frame, text="Sender Name:").grid(row=4, column=0, sticky='w', pady=5)
+        self.sender_name_var = tk.StringVar(value="Hope Academy")
+        ttk.Entry(server_frame, textvariable=self.sender_name_var, width=40).grid(row=4, column=1, sticky='ew', padx=5)
+        
+        # Authentication
+        auth_frame = ttk.LabelFrame(self.main_frame, text="Authentication", padding="10")
+        auth_frame.pack(fill='x', pady=(0, 10))
+        
+        # Username
+        ttk.Label(auth_frame, text="Username:").grid(row=0, column=0, sticky='w', pady=5)
+        self.username_var = tk.StringVar()
+        ttk.Entry(auth_frame, textvariable=self.username_var, width=40).grid(row=0, column=1, sticky='ew', padx=5)
+        
+        # Password
+        ttk.Label(auth_frame, text="Password:").grid(row=1, column=0, sticky='w', pady=5)
+        self.password_var = tk.StringVar()
+        ttk.Entry(auth_frame, textvariable=self.password_var, width=40, show='*').grid(row=1, column=1, sticky='ew', padx=5)
+        
+        # Email Preferences
+        prefs_frame = ttk.LabelFrame(self.main_frame, text="Notification Preferences", padding="10")
+        prefs_frame.pack(fill='x', pady=(0, 10))
+        
+        # Enable notifications
+        self.enable_notifications_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(prefs_frame, text="Enable Email Notifications", 
+                       variable=self.enable_notifications_var).grid(row=0, column=0, columnspan=2, sticky='w', pady=5)
+        
+        # Payment reminders
+        self.payment_reminder_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(prefs_frame, text="Send Payment Reminders", 
+                       variable=self.payment_reminder_var).grid(row=1, column=0, columnspan=2, sticky='w', pady=5)
+        
+        # Payment confirmations
+        self.payment_confirm_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(prefs_frame, text="Send Payment Confirmations", 
+                       variable=self.payment_confirm_var).grid(row=2, column=0, columnspan=2, sticky='w', pady=5)
+        
+        # Attendance alerts
+        self.attendance_alert_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(prefs_frame, text="Send Attendance Alerts", 
+                       variable=self.attendance_alert_var).grid(row=3, column=0, columnspan=2, sticky='w', pady=5)
+        
+        # Test Connection Button
+        test_frame = ttk.Frame(self.main_frame)
+        test_frame.pack(fill='x', pady=(0, 10))
+        
+        ttk.Button(test_frame, text="Test Connection", 
+                  command=self.test_connection).pack(side='left', padx=(0, 5))
+        
+        self.status_label = ttk.Label(test_frame, text="", foreground="gray")
+        self.status_label.pack(side='left', padx=5)
+        
+        # Button box
+        self.create_button_box(self.main_frame)
+        
+        # Configure grid weights
+        server_frame.columnconfigure(1, weight=1)
+        auth_frame.columnconfigure(1, weight=1)
+    
+    def load_settings(self):
+        """Load email settings from config"""
+        try:
+            import config
+            if hasattr(config, 'EMAIL_CONFIG'):
+                email_cfg = config.EMAIL_CONFIG
+                self.smtp_server_var.set(email_cfg.get('smtp_server', 'smtp.gmail.com'))
+                self.smtp_port_var.set(str(email_cfg.get('smtp_port', 587)))
+                self.use_tls_var.set(email_cfg.get('use_tls', True))
+                self.sender_email_var.set(email_cfg.get('sender_email', ''))
+                self.sender_name_var.set(email_cfg.get('sender_name', 'Hope Academy'))
+                self.username_var.set(email_cfg.get('username', ''))
+                self.password_var.set(email_cfg.get('password', ''))
+        except:
+            pass
+    
+    def test_connection(self):
+        """Test email connection"""
+        try:
+            from utils.email_notifier import EmailNotifier, EmailConfig
+            
+            email_config = EmailConfig(
+                smtp_server=self.smtp_server_var.get(),
+                smtp_port=int(self.smtp_port_var.get()),
+                sender_email=self.sender_email_var.get(),
+                sender_name=self.sender_name_var.get(),
+                username=self.username_var.get(),
+                password=self.password_var.get(),
+                use_tls=self.use_tls_var.get()
+            )
+            
+            notifier = EmailNotifier(email_config)
+            result = notifier.test_connection()
+            
+            if result:
+                self.status_label.config(text="✓ Connection successful!", foreground="green")
+                messagebox.showinfo('Success', 'Email connection test passed!')
+            else:
+                self.status_label.config(text="✗ Connection failed", foreground="red")
+                messagebox.showerror('Error', 'Email connection test failed')
+        
+        except Exception as e:
+            self.status_label.config(text="✗ Connection failed", foreground="red")
+            messagebox.showerror('Error', f'Connection test error: {str(e)}')
+    
+    def on_ok(self):
+        """Save email configuration"""
+        try:
+            # Save to config
+            import config
+            
+            config.EMAIL_CONFIG = {
+                'smtp_server': self.smtp_server_var.get(),
+                'smtp_port': int(self.smtp_port_var.get()),
+                'sender_email': self.sender_email_var.get(),
+                'sender_name': self.sender_name_var.get(),
+                'username': self.username_var.get(),
+                'password': self.password_var.get(),
+                'use_tls': self.use_tls_var.get(),
+                'enable_notifications': self.enable_notifications_var.get(),
+                'payment_reminder': self.payment_reminder_var.get(),
+                'payment_confirmation': self.payment_confirm_var.get(),
+                'attendance_alert': self.attendance_alert_var.get()
+            }
+            
+            # Save to file if needed
+            self.save_to_file()
+            
+            self.result = True
+            self.dialog.destroy()
+        
+        except Exception as e:
+            messagebox.showerror('Error', f'Failed to save configuration: {str(e)}')
+    
+    def save_to_file(self):
+        """Save configuration to file"""
+        try:
+            import json
+            import os
+            
+            config_file = 'data/email_config.json'
+            os.makedirs(os.path.dirname(config_file), exist_ok=True)
+            
+            config_data = {
+                'smtp_server': self.smtp_server_var.get(),
+                'smtp_port': int(self.smtp_port_var.get()),
+                'sender_email': self.sender_email_var.get(),
+                'sender_name': self.sender_name_var.get(),
+                'username': self.username_var.get(),
+                'password': self.password_var.get(),
+                'use_tls': self.use_tls_var.get()
+            }
+            
+            with open(config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except:
+            pass

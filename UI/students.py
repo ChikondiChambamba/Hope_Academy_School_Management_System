@@ -447,7 +447,7 @@ class StudentsTab:
                 student_code = bal['student_code']
                 student_name = bal['student_name']
                 class_name = bal['class']
-                total_due = float(bal['total_due'])
+                total_due = float(bal['total_due']) + float(bal.get('carried_balance') or 0)
                 total_paid = float(bal['total_paid'])
                 balance = float(bal['balance'])
                 

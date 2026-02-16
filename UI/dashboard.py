@@ -281,33 +281,13 @@ class DashboardTab:
             
             # Pending fees (students with balance > 0) - only for Administrator and Finance
             if self.role in ('Administrator', 'Finance'):
-                acad_year = config.Config.CURRENT_ACADEMIC_YEAR
-                query = f"""
-                    SELECT COUNT(DISTINCT s.student_id) as count
-                    FROM students s
-                    JOIN (
-                        SELECT 
-                            s.student_id,
-                            SUM(
-                                CASE
-                                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
-                                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
-                                    ELSE ft.amount
-                                END
-                            ) - COALESCE(SUM(sf.amount_paid), 0) as balance
-                        FROM students s
-                        CROSS JOIN fee_types ft
-                        LEFT JOIN student_fees sf ON s.student_id = sf.student_id 
-                            AND ft.fee_type_id = sf.fee_type_id
-                        WHERE ft.academic_year = '{acad_year}'
-                        GROUP BY s.student_id
-                        HAVING balance > 0
-                    ) balances ON s.student_id = balances.student_id
-                    WHERE s.is_active = 1
-                """
-                result = db.execute_query(query, fetch=True)
-                if result:
-                    self.stats_vars['pending_fees'].set(str(result[0]['count']))
+                from models.finance import FinancialManager
+                balances = FinancialManager.get_student_balances(
+                    config.Config.CURRENT_ACADEMIC_YEAR,
+                    term=config.Config.CURRENT_TERM
+                )
+                pending_count = sum(1 for row in balances if float(row.get('balance') or 0) > 0)
+                self.stats_vars['pending_fees'].set(str(pending_count))
                 
         except Exception as e:
             print(f"Error loading statistics: {e}")

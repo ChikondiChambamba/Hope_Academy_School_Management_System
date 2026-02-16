@@ -182,6 +182,13 @@ class FinanceTab:
         self.balance_status_var = tk.StringVar(value="All")
         status_options = ['All', 'Paid', 'Partial', 'Unpaid']
         ttk.Combobox(top_frame, textvariable=self.balance_status_var, values=status_options, width=10).pack(side='left', padx=5)
+
+        # Fee Type filter (new)
+        ttk.Label(top_frame, text="Fee Type:").pack(side='left', padx=5)
+        self.balance_fee_var = tk.StringVar(value="")
+        self.balance_fee_combo = ttk.Combobox(top_frame, textvariable=self.balance_fee_var, width=30)
+        self.balance_fee_combo.pack(side='left', padx=5)
+        self.balance_fee_combo.bind('<<ComboboxSelected>>', lambda e: self.load_student_balances())
         
         # Search
         ttk.Label(top_frame, text="Search:").pack(side='left', padx=5)
@@ -189,7 +196,7 @@ class FinanceTab:
         ttk.Entry(top_frame, textvariable=self.balance_search_var, width=20).pack(side='left', padx=5)
         
         ttk.Button(top_frame, text="Search", command=self.search_balances).pack(side='left', padx=5)
-        ttk.Button(top_frame, text="Clear", command=self.load_student_balances).pack(side='left', padx=5)
+        ttk.Button(top_frame, text="Clear", command=lambda: (self.balance_class_var.set('All'), self.balance_status_var.set('All'), self.balance_fee_var.set(''), self.balance_search_var.set(''), self.load_student_balances())).pack(side='left', padx=5)
         
         # Summary
         summary_frame = ttk.Frame(self.student_balances_frame)
@@ -973,9 +980,14 @@ class FinanceTab:
             results = db.execute_query(query, (config.Config.CURRENT_ACADEMIC_YEAR,), fetch=True)
             fee_list = [f"{r['fee_type_id']}: {r['fee_name']} ({format_currency(r['amount'])})" for r in results]
             self.fee_type_combo['values'] = fee_list
-            # populate filter combo as well
+            # populate filter combos as well
             try:
                 self.filter_fee_combo['values'] = [''] + fee_list
+            except Exception:
+                pass
+            try:
+                # populate the student balances fee filter
+                self.balance_fee_combo['values'] = [''] + fee_list
             except Exception:
                 pass
         except Exception as e:
@@ -1157,184 +1169,82 @@ class FinanceTab:
             print(f"Error searching payments: {e}")
     
     def load_student_balances(self):
-        """Load student balances"""
+        """Load student balances (supports fee-type filtering)"""
         # Clear existing items
         for item in self.balances_tree.get_children():
             self.balances_tree.delete(item)
-        
+
         try:
-            # Compute total fees per student replacing tuition amounts depending on class
-            acad_year = config.Config.CURRENT_ACADEMIC_YEAR
-            query = f"""
-                SELECT 
-                    s.student_id,
-                    CONCAT(s.first_name, ' ', s.last_name) as student_name,
-                    s.class,
-                    COALESCE(SUM(
-                        CASE
-                            WHEN sfe.exemption_id IS NOT NULL THEN 0
-                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
-                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
-                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
-                            ELSE ft.amount
-                        END
-                    ), 0) as total_fees,
-                    COALESCE(SUM(sf.amount_paid), 0) as amount_paid,
-                    COALESCE(SUM(
-                        CASE
-                            WHEN sfe.exemption_id IS NOT NULL THEN 0
-                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
-                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
-                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
-                            ELSE ft.amount
-                        END
-                    ), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
-                FROM students s
-                CROSS JOIN fee_types ft
-                LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
-                LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-                WHERE s.is_active = 1 AND ft.academic_year = '{acad_year}'
-                GROUP BY s.student_id, s.first_name, s.last_name, s.class
-                ORDER BY s.class, s.last_name, s.first_name
-            """
-            results = db.execute_query(query, fetch=True)
-            
+            # Determine fee type filter if selected
+            fee_sel = getattr(self, 'balance_fee_var', None)
+            fee_type_id = None
+            if fee_sel:
+                sel = self.balance_fee_var.get() or ''
+                if sel:
+                    try:
+                        fee_type_id = int(sel.split(':')[0])
+                    except Exception:
+                        fee_type_id = None
+
+            # Use FinancialManager to get balances (backend now supports fee_type filter)
+            from models.finance import FinancialManager
+            results = FinancialManager.get_student_balances(config.Config.CURRENT_ACADEMIC_YEAR, fee_type_id=fee_type_id)
+
             total_outstanding = 0
             with_balance = 0
             fully_paid = 0
-            
+
+            # Apply client-side filters (class, status, search)
+            class_filter = self.balance_class_var.get()
+            status_filter = self.balance_status_var.get()
+            search_term = (self.balance_search_var.get() or '').strip().lower()
+
             for row in results:
-                balance = float(row['balance'])
-                status = "Paid" if balance <= 0 else "Partial" if float(row['amount_paid']) > 0 else "Unpaid"
-                
+                # Apply class filter
+                if class_filter and class_filter != 'All' and row.get('class') != class_filter:
+                    continue
+                balance = float(row.get('balance') or 0)
+                paid = float(row.get('amount_paid') or 0)
+                total_fees = float(row.get('total_fees') or 0) + float(row.get('carried_balance') or 0)
+                status = "Paid" if balance <= 0 else "Partial" if paid > 0 else "Unpaid"
+
+                # Apply status filter
+                if status_filter and status_filter != 'All' and status != status_filter:
+                    continue
+
+                # Apply search
+                if search_term:
+                    if search_term not in (row.get('student_name', '') or '').lower():
+                        continue
+
                 if balance > 0:
                     total_outstanding += balance
                     with_balance += 1
                 else:
                     fully_paid += 1
-                
+
                 self.balances_tree.insert('', 'end', values=(
-                    row['student_id'],
-                    row['student_name'],
-                    row['class'],
-                    format_currency(float(row['total_fees'])),
-                    format_currency(float(row['amount_paid'])),
+                    row.get('student_id'),
+                    row.get('student_name'),
+                    row.get('class'),
+                    format_currency(total_fees),
+                    format_currency(paid),
                     format_currency(balance),
                     status
                 ))
-            
+
             # Update summary
             self.total_outstanding_var.set(format_currency(total_outstanding))
             self.with_balance_var.set(str(with_balance))
             self.fully_paid_var.set(str(fully_paid))
-            
+
         except Exception as e:
             print(f"Error loading student balances: {e}")
     
     def search_balances(self):
-        """Search student balances"""
-        # Clear existing items
-        for item in self.balances_tree.get_children():
-            self.balances_tree.delete(item)
-        
+        """Handler for search button - reuse load_student_balances so fee-type filter is honored"""
         try:
-            class_filter = self.balance_class_var.get()
-            status_filter = self.balance_status_var.get()
-            search_term = self.balance_search_var.get().strip()
-            base_query = """
-                SELECT 
-                    s.student_id,
-                    CONCAT(s.first_name, ' ', s.last_name) as student_name,
-                    s.class,
-                    COALESCE(SUM(
-                        CASE
-                            WHEN sfe.exemption_id IS NOT NULL THEN 0
-                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
-                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
-                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
-                            ELSE ft.amount
-                        END
-                    ), 0) as total_fees,
-                    COALESCE(SUM(sf.amount_paid), 0) as amount_paid,
-                    COALESCE(SUM(
-                        CASE
-                            WHEN sfe.exemption_id IS NOT NULL THEN 0
-                            WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') AND s.is_new = 0 THEN 0
-                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
-                            WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
-                            ELSE ft.amount
-                        END
-                    ), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
-                FROM students s
-                CROSS JOIN fee_types ft
-                -- try to match a class row for the student's class name (classes may be missing)
-                LEFT JOIN classes c ON c.class_name = s.class AND c.academic_year = ft.academic_year
-                -- fee type to class mapping: if mappings exist, only apply fee types for matching classes
-                LEFT JOIN fee_type_classes ftc ON ftc.fee_type_id = ft.fee_type_id AND ftc.class_id = c.class_id
-                LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
-                LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-                WHERE s.is_active = 1 AND ft.academic_year = %s
-                  AND (
-                      NOT EXISTS (SELECT 1 FROM fee_type_classes WHERE fee_type_id = ft.fee_type_id)
-                      OR ftc.class_id IS NOT NULL
-                  )
-            """
-            
-            conditions = []
-            params = []
-            
-            if class_filter != "All":
-                conditions.append("s.class = %s")
-                params.append(class_filter)
-            
-            if search_term:
-                conditions.append("(s.first_name LIKE %s OR s.last_name LIKE %s OR s.student_code LIKE %s)")
-                params.extend([f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"])
-            
-            if conditions:
-                base_query += " AND " + " AND ".join(conditions)
-            
-            base_query += " GROUP BY s.student_id, s.first_name, s.last_name, s.class"
-            base_query += " ORDER BY s.class, s.last_name, s.first_name"
-            
-            # Use current academic year
-            params = tuple(params) if params else tuple()
-            params = (config.Config.CURRENT_ACADEMIC_YEAR,) + params
-            results = db.execute_query(query=base_query, params=params, fetch=True)
-            
-            total_outstanding = 0
-            with_balance = 0
-            fully_paid = 0
-            
-            for row in results:
-                balance = float(row['balance'])
-                status = "Paid" if balance <= 0 else "Partial" if float(row['amount_paid']) > 0 else "Unpaid"
-                
-                # Apply status filter
-                if status_filter != "All" and status != status_filter:
-                    continue
-                
-                if balance > 0:
-                    total_outstanding += balance
-                    with_balance += 1
-                else:
-                    fully_paid += 1
-                
-                self.balances_tree.insert('', 'end', values=(
-                    row['student_id'],
-                    row['student_name'],
-                    row['class'],
-                    format_currency(float(row['total_fees'])),
-                    format_currency(float(row['amount_paid'])),
-                    format_currency(balance),
-                    status
-                ))
-            
-            # Update summary
-            self.total_outstanding_var.set(format_currency(total_outstanding))
-            self.with_balance_var.set(str(with_balance))
-            self.fully_paid_var.set(str(fully_paid))
-            
+            self.load_student_balances()
         except Exception as e:
             print(f"Error searching balances: {e}")
     
@@ -1550,31 +1460,14 @@ class FinanceTab:
                 ytd_expenses = result[0]['expenses']
                 self.ytd_var.set(format_currency(ytd_income - ytd_expenses))
             
-            # Outstanding fees (apply tuition mapping by class)
-            acad_year = config.Config.CURRENT_ACADEMIC_YEAR
-            query = f"""
-                SELECT COALESCE(SUM(balance), 0) as total
-                FROM (
-                    SELECT 
-                        COALESCE(SUM(
-                            CASE
-                                WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
-                                WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
-                                ELSE ft.amount
-                            END
-                        ), 0) - COALESCE(SUM(sf.amount_paid), 0) as balance
-                    FROM students s
-                    CROSS JOIN fee_types ft
-                    LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-                    WHERE s.is_active = 1 AND ft.academic_year = '{acad_year}'
-                    GROUP BY s.student_id
-                    HAVING balance > 0
-                ) as outstanding
-            """
-            result = db.execute_query(query, fetch=True)
-            if result:
-                from utils.helpers import format_currency
-                self.outstanding_var.set(format_currency(float(result[0]['total'])))
+            # Outstanding fees
+            try:
+                from models.finance import FinancialManager
+                balances = FinancialManager.get_student_balances(config.Config.CURRENT_ACADEMIC_YEAR, term=config.Config.CURRENT_TERM)
+                outstanding_total = sum(float(r.get('balance') or 0) for r in balances if float(r.get('balance') or 0) > 0)
+                self.outstanding_var.set(format_currency(outstanding_total))
+            except Exception:
+                self.outstanding_var.set(format_currency(0))
             
             # Load monthly breakdown
             self.load_monthly_breakdown()
@@ -1957,10 +1850,15 @@ class FinanceTab:
                 FROM fee_types ft
                 LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.student_id = %s
                 WHERE ft.academic_year = %s
+                  AND (ft.term = %s OR ft.term IS NULL OR ft.term = '')
                 GROUP BY ft.fee_type_id, ft.fee_name, ft.amount
                 ORDER BY ft.fee_name
             """
-            results = db.execute_query(query, (student_id, config.Config.CURRENT_ACADEMIC_YEAR), fetch=True)
+            results = db.execute_query(
+                query,
+                (student_id, config.Config.CURRENT_ACADEMIC_YEAR, config.Config.CURRENT_TERM),
+                fetch=True
+            )
             
             # Create treeview
             columns = ['Fee Type', 'Expected', 'Paid', 'Balance', 'Last Payment']
@@ -2002,6 +1900,33 @@ class FinanceTab:
                 total_expected += expected_amt
                 total_paid += paid_amt
                 total_balance += balance_val
+
+            # Include carried-over balance from previous term as opening balance for current term.
+            try:
+                carry_q = """
+                    SELECT COALESCE(SUM(carried_balance), 0) as carried_balance
+                    FROM student_term_fee_rollovers
+                    WHERE student_id = %s AND to_academic_year = %s AND to_term = %s
+                """
+                carry_res = db.execute_query(
+                    carry_q,
+                    (student_id, config.Config.CURRENT_ACADEMIC_YEAR, config.Config.CURRENT_TERM),
+                    fetch=True
+                )
+                carried_balance = float(carry_res[0].get('carried_balance', 0) or 0) if carry_res else 0.0
+            except Exception:
+                carried_balance = 0.0
+
+            if carried_balance > 0:
+                tree.insert('', 'end', values=(
+                    'Carried Balance',
+                    format_currency(carried_balance),
+                    format_currency(0),
+                    format_currency(carried_balance),
+                    'Opening Balance'
+                ))
+                total_expected += carried_balance
+                total_balance += carried_balance
             
             # Add totals row
             tree.insert('', 'end', values=(
@@ -2023,61 +1948,116 @@ class FinanceTab:
             messagebox.showerror("Error", f"Failed to load fee details: {str(e)}")
     
     def show_payment_history(self, student_id, student_name):
-        """Show payment history for student"""
+        """Show payment history for student (supports fee-type filtering)"""
         try:
             dialog = tk.Toplevel(self.frame)
             dialog.title(f"Payment History - {student_name}")
-            dialog.geometry("700x400")
-            
-            # Get payment history
-            query = """
-                SELECT 
-                    sf.payment_date,
-                    ft.fee_name,
-                    sf.amount_paid,
-                    sf.payment_method,
-                    sf.receipt_number,
-                    sf.description
-                FROM student_fees sf
-                JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id
-                WHERE sf.student_id = %s
-                ORDER BY sf.payment_date DESC
-            """
-            results = db.execute_query(query, (student_id,), fetch=True)
-            
+            dialog.geometry("700x450")
+
+            # Top controls: Fee type filter + filtered balance display
+            top_ctrl = ttk.Frame(dialog)
+            top_ctrl.pack(fill='x', padx=10, pady=5)
+
+            ttk.Label(top_ctrl, text='Filter by Fee Type:').pack(side='left', padx=(0,6))
+            fee_var = tk.StringVar(value='')
+            fee_combo = ttk.Combobox(top_ctrl, textvariable=fee_var, width=35)
+            fee_combo.pack(side='left', padx=(0,6))
+
+            # balance label
+            filtered_balance_var = tk.StringVar(value='')
+            ttk.Label(top_ctrl, textvariable=filtered_balance_var, font=('Arial', 10, 'bold')).pack(side='right')
+
+            # Populate fee types
+            try:
+                q = "SELECT fee_type_id, fee_name, amount FROM fee_types WHERE academic_year=%s ORDER BY fee_name"
+                fee_results = db.execute_query(q, (config.Config.CURRENT_ACADEMIC_YEAR,), fetch=True)
+                fee_list = [''] + [f"{r['fee_type_id']}: {r['fee_name']} ({format_currency(r['amount'])})" for r in fee_results]
+                fee_combo['values'] = fee_list
+            except Exception:
+                fee_combo['values'] = ['']
+
             # Create treeview
             columns = ['Date', 'Fee Type', 'Amount', 'Method', 'Receipt', 'Description']
             tree = ttk.Treeview(dialog, columns=columns, show='headings', height=15)
-            
             for col in columns:
                 tree.heading(col, text=col)
                 tree.column(col, width=100)
-            
+
             scrollbar = ttk.Scrollbar(dialog, orient='vertical', command=tree.yview)
             tree.configure(yscrollcommand=scrollbar.set)
-            
+
             tree.pack(side='left', fill='both', expand=True, padx=10, pady=10)
             scrollbar.pack(side='right', fill='y', pady=10)
-            
-            # Add data
-            total = 0
-            for row in results:
-                tree.insert('', 'end', values=(
-                    row['payment_date'],
-                    row['fee_name'],
-                    format_currency(float(row['amount_paid'])),
-                    row['payment_method'],
-                    row['receipt_number'] or '',
-                    row['description'] or ''
-                ))
-                total += float(row['amount_paid'])
-            
+
+            # Function to reload payments based on selected fee type
+            def reload_payments():
+                # clear
+                for it in tree.get_children():
+                    tree.delete(it)
+
+                sel = fee_var.get() or ''
+                fee_type_id = None
+                if sel:
+                    try:
+                        fee_type_id = int(sel.split(':')[0])
+                    except Exception:
+                        fee_type_id = None
+
+                # Build query
+                query = """
+                    SELECT 
+                        sf.payment_date,
+                        ft.fee_name,
+                        sf.amount_paid,
+                        sf.payment_method,
+                        sf.receipt_number,
+                        sf.description
+                    FROM student_fees sf
+                    JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id
+                    WHERE sf.student_id = %s
+                """
+                params = [student_id]
+                if fee_type_id:
+                    query += " AND ft.fee_type_id = %s"
+                    params.append(fee_type_id)
+                query += " ORDER BY sf.payment_date DESC"
+
+                rows = db.execute_query(query, tuple(params), fetch=True)
+                total = 0
+                for row in rows:
+                    tree.insert('', 'end', values=(
+                        row['payment_date'],
+                        row['fee_name'],
+                        format_currency(float(row['amount_paid'])),
+                        row['payment_method'],
+                        row['receipt_number'] or '',
+                        row['description'] or ''
+                    ))
+                    total += float(row['amount_paid'])
+
+                # Update filtered balance using backend helper
+                try:
+                    from models.finance import FinancialManager
+                    bal = FinancialManager.get_student_balance(student_id, config.Config.CURRENT_ACADEMIC_YEAR, fee_type_id=fee_type_id)
+                    filtered_balance_var.set(f"Filtered Balance: {format_currency(bal.get('balance', 0))}")
+                except Exception:
+                    filtered_balance_var.set('')
+
+                # Update summary
+                summary_label.config(text=f"Total Payments: {format_currency(total)}")
+
+            # Bind selection change
+            fee_combo.bind('<<ComboboxSelected>>', lambda e: reload_payments())
+
+            # initial load
+            reload_payments()
+
             # Summary
             summary_frame = ttk.Frame(dialog)
             summary_frame.pack(fill='x', padx=10, pady=5)
-            
-            ttk.Label(summary_frame, text=f"Total Payments: {format_currency(total)}", font=('Arial', 10, 'bold')).pack()
-            
+            summary_label = ttk.Label(summary_frame, text="Total Payments: ", font=('Arial', 10, 'bold'))
+            summary_label.pack()
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load payment history: {str(e)}")
     

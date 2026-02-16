@@ -103,6 +103,7 @@ class Queries:
         LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
         LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.student_id = s.student_id
         WHERE ft.academic_year = %s
+          AND (ft.term = %s OR ft.term IS NULL OR ft.term = '')
         GROUP BY ft.fee_type_id, ft.fee_name, ft.amount
         ORDER BY ft.fee_name
     """
