@@ -401,7 +401,7 @@ class FeePayment:
     fee_type_id: int = 0                   # Required
     amount_paid: float = 0.0               # Required, > 0
     payment_date: Optional[date] = None    # Defaults to today
-    payment_method: str = "Cash"           # Cash/M-Pesa/Bank/Check
+    payment_method: str = "Cash"           # Cash/Mobile money/Bank/Check
     receipt_number: str = ""               # Auto-generated if empty
     description: str = ""                  # Optional notes
     academic_year: str = ""

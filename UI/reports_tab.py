@@ -4,13 +4,15 @@ Reports Tab - UI for generating various reports
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime, date, timedelta
+import re
 import config
 from database.connection import db
 from reports.generators.financial_reports import (
     generate_fee_collection_report,
     generate_expense_report,
     generate_financial_summary_report,
-    generate_student_fees_report
+    generate_student_fees_report,
+    generate_salary_report
 )
 from reports.generators.student_reports import (
     generate_student_list_report,
@@ -110,7 +112,13 @@ class ReportsTab:
                 ('fee_collection', 'Fee Collection Report'),
                 ('expense', 'Expense Report'),
                 ('financial_summary', 'Financial Summary'),
-                ('student_fees', 'Student Fees Report')
+                ('student_fees', 'Student Fees Report'),
+                ('salary_report', 'Salary Report')
+            ],
+            'Balance Reports': [
+                ('students_with_balance', 'Students With Balance'),
+                ('students_unpaid', 'Students Unpaid'),
+                ('students_partial', 'Students Partial')
             ],
             'Student Reports': [
                 ('student_list', 'Student List'),
@@ -254,6 +262,26 @@ class ReportsTab:
                 'name': 'Student Fees Report',
                 'description': 'Generate report of student fee balances and payment history.',
                 'config': self.setup_student_fees_config
+            },
+            'salary_report': {
+                'name': 'Salary Report',
+                'description': 'Generate staff salary report with base salary, allowances, advances, and net salary.',
+                'config': self.setup_salary_config
+            },
+            'students_with_balance': {
+                'name': 'Students With Balance',
+                'description': 'Generate report of students with outstanding balances.',
+                'config': self.setup_balance_status_config
+            },
+            'students_unpaid': {
+                'name': 'Students Unpaid',
+                'description': 'Generate report of students with unpaid balances (no payment recorded).',
+                'config': self.setup_balance_status_config
+            },
+            'students_partial': {
+                'name': 'Students Partial',
+                'description': 'Generate report of students with partial payments and remaining balances.',
+                'config': self.setup_balance_status_config
             },
             'student_list': {
                 'name': 'Student List',
@@ -429,8 +457,65 @@ class ReportsTab:
             state='readonly'
         )
         balance_combo.grid(row=1, column=1, sticky='w', pady=5)
+
+        # Fee type filter
+        ttk.Label(self.config_frame, text="Fee Type Filter:").grid(row=2, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.fee_type_filter_var = tk.StringVar(value="All Fee Types")
+        self.fee_type_filter_combo = ttk.Combobox(
+            self.config_frame,
+            textvariable=self.fee_type_filter_var,
+            values=[],
+            width=30,
+            state='readonly'
+        )
+        self.fee_type_filter_combo.grid(row=2, column=1, sticky='w', pady=5)
         
         # Academic year
+        ttk.Label(self.config_frame, text="Academic Year:").grid(row=3, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.fee_year_var = tk.StringVar(value=config.Config.CURRENT_ACADEMIC_YEAR)
+        year_combo = ttk.Combobox(
+            self.config_frame,
+            textvariable=self.fee_year_var,
+            values=['2023', '2024', '2025'],
+            width=10,
+            state='readonly'
+        )
+        year_combo.grid(row=3, column=1, sticky='w', pady=5)
+        year_combo.bind('<<ComboboxSelected>>', lambda e: self.populate_fee_type_filter())
+        self.populate_fee_type_filter()
+
+    def setup_balance_status_config(self):
+        """Setup configuration for dedicated balance status reports."""
+        ttk.Label(self.config_frame, text="Filter by Class:").grid(row=0, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.class_filter_var = tk.StringVar(value="All")
+
+        try:
+            query = "SELECT DISTINCT class FROM students WHERE is_active = 1 ORDER BY class"
+            results = db.execute_query(query, fetch=True)
+            classes = ['All'] + [r['class'] for r in results]
+        except Exception:
+            classes = ['All']
+
+        class_combo = ttk.Combobox(
+            self.config_frame,
+            textvariable=self.class_filter_var,
+            values=classes,
+            width=15,
+            state='readonly'
+        )
+        class_combo.grid(row=0, column=1, sticky='w', pady=5)
+
+        ttk.Label(self.config_frame, text="Fee Type Filter:").grid(row=1, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.fee_type_filter_var = tk.StringVar(value="All Fee Types")
+        self.fee_type_filter_combo = ttk.Combobox(
+            self.config_frame,
+            textvariable=self.fee_type_filter_var,
+            values=[],
+            width=30,
+            state='readonly'
+        )
+        self.fee_type_filter_combo.grid(row=1, column=1, sticky='w', pady=5)
+
         ttk.Label(self.config_frame, text="Academic Year:").grid(row=2, column=0, sticky='e', padx=(0, 10), pady=5)
         self.fee_year_var = tk.StringVar(value=config.Config.CURRENT_ACADEMIC_YEAR)
         year_combo = ttk.Combobox(
@@ -441,6 +526,63 @@ class ReportsTab:
             state='readonly'
         )
         year_combo.grid(row=2, column=1, sticky='w', pady=5)
+        year_combo.bind('<<ComboboxSelected>>', lambda e: self.populate_fee_type_filter())
+        self.populate_fee_type_filter()
+
+    def populate_fee_type_filter(self):
+        """Populate fee type filter options for selected academic year."""
+        year = self.fee_year_var.get() if hasattr(self, 'fee_year_var') else config.Config.CURRENT_ACADEMIC_YEAR
+        options = ['All Fee Types', 'Tuition Fees Only']
+        try:
+            rows = db.execute_query(
+                """
+                SELECT fee_type_id, fee_name
+                FROM fee_types
+                WHERE academic_year = %s
+                ORDER BY fee_name
+                """,
+                (year,),
+                fetch=True
+            ) or []
+            for row in rows:
+                fid = row.get('fee_type_id')
+                fname = row.get('fee_name') or ''
+                if fid is not None:
+                    options.append(f"{fname} (#{fid})")
+        except Exception:
+            pass
+
+        if hasattr(self, 'fee_type_filter_combo'):
+            self.fee_type_filter_combo['values'] = options
+            if self.fee_type_filter_var.get() not in options:
+                self.fee_type_filter_var.set('All Fee Types')
+
+    def _resolve_fee_type_ids(self, academic_year: str, fee_type_filter: str):
+        """Resolve fee filter into a list of fee_type_ids. None means all fees."""
+        selected = (fee_type_filter or 'All Fee Types').strip()
+        if selected == 'All Fee Types':
+            return None
+        if selected == 'Tuition Fees Only':
+            try:
+                rows = db.execute_query(
+                    """
+                    SELECT fee_type_id
+                    FROM fee_types
+                    WHERE academic_year = %s
+                      AND LOWER(fee_name) LIKE '%%tuition%%'
+                    ORDER BY fee_type_id
+                    """,
+                    (academic_year,),
+                    fetch=True
+                ) or []
+                return [int(r['fee_type_id']) for r in rows if r.get('fee_type_id') is not None]
+            except Exception:
+                return []
+
+        m = re.search(r'\(#(\d+)\)\s*$', selected)
+        if m:
+            return [int(m.group(1))]
+        return None
     
     def setup_class_filter_config(self):
         """Setup class filter configuration"""
@@ -565,6 +707,26 @@ class ReportsTab:
     def setup_simple_config(self):
         """Setup simple configuration (no options)"""
         ttk.Label(self.config_frame, text="No additional configuration required.").grid(row=0, column=0, columnspan=2, pady=10)
+
+    def setup_salary_config(self):
+        """Setup salary report configuration."""
+        ttk.Label(self.config_frame, text="Payroll Month (YYYY-MM):").grid(row=0, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.salary_month_var = tk.StringVar(value=date.today().strftime('%Y-%m'))
+        month_vals = []
+        cur = date.today().replace(day=1)
+        for _ in range(24):
+            month_vals.append(cur.strftime('%Y-%m'))
+            if cur.month == 1:
+                cur = cur.replace(year=cur.year - 1, month=12)
+            else:
+                cur = cur.replace(month=cur.month - 1)
+        ttk.Combobox(
+            self.config_frame,
+            textvariable=self.salary_month_var,
+            values=month_vals,
+            width=10,
+            state='readonly'
+        ).grid(row=0, column=1, sticky='w', pady=5)
     
     def set_date_range(self, period):
         """Set date range based on period"""
@@ -577,9 +739,13 @@ class ReportsTab:
             start_date = date(today.year, today.month, 1)
             end_date = today
         elif period == 'term':
-            # Get current term dates (simplified)
-            start_date = date(today.year, 1, 1)
-            end_date = today
+            term_start, term_end = config.Config.get_term_date_range(config.Config.CURRENT_TERM)
+            if term_start and term_end:
+                start_date = datetime.strptime(term_start, '%Y-%m-%d').date()
+                end_date = datetime.strptime(term_end, '%Y-%m-%d').date()
+            else:
+                start_date = date(today.year, 1, 1)
+                end_date = today
         elif period == 'year':
             start_date = date(today.year, 1, 1)
             end_date = date(today.year, 12, 31)
@@ -612,6 +778,17 @@ class ReportsTab:
             params['class_filter'] = self.class_filter_var.get()
             params['balance_filter'] = self.balance_filter_var.get()
             params['academic_year'] = self.fee_year_var.get()
+            params['fee_type_filter'] = self.fee_type_filter_var.get()
+        elif self.current_report in ['students_with_balance', 'students_unpaid', 'students_partial']:
+            params['class_filter'] = self.class_filter_var.get()
+            params['academic_year'] = self.fee_year_var.get()
+            params['fee_type_filter'] = self.fee_type_filter_var.get()
+            if self.current_report == 'students_with_balance':
+                params['balance_filter'] = 'With Balance Only'
+            elif self.current_report == 'students_unpaid':
+                params['balance_filter'] = 'Unpaid Only'
+            else:
+                params['balance_filter'] = 'Partial Only'
             
         elif self.current_report in ['student_list', 'attendance_summary']:
             params['class_filter'] = self.report_class_var.get()
@@ -632,6 +809,8 @@ class ReportsTab:
             
         elif self.current_report == 'inventory_list':
             params['category_filter'] = self.category_filter_var.get()
+        elif self.current_report == 'salary_report':
+            params['year_month'] = self.salary_month_var.get()
         
         return params
     
@@ -694,6 +873,10 @@ class ReportsTab:
             elif self.current_report == 'financial_summary':
                 return self.get_financial_summary_data(params, preview)
             elif self.current_report == 'student_fees':
+                return self.get_student_fees_data(params, preview)
+            elif self.current_report == 'salary_report':
+                return self.get_salary_report_data(params, preview)
+            elif self.current_report in ['students_with_balance', 'students_unpaid', 'students_partial']:
                 return self.get_student_fees_data(params, preview)
             elif self.current_report == 'student_list':
                 return self.get_student_list_data(params, preview)
@@ -807,10 +990,57 @@ class ReportsTab:
     def get_student_fees_data(self, params, preview=False):
         """Get student fees data"""
         from models.finance import FinancialManager
-        balances = FinancialManager.get_student_balances(
-            academic_year=params['academic_year'],
-            term=config.Config.CURRENT_TERM
-        )
+        fee_type_ids = self._resolve_fee_type_ids(params['academic_year'], params.get('fee_type_filter'))
+        balances = []
+        if fee_type_ids is None:
+            balances = FinancialManager.get_student_balances(
+                academic_year=params['academic_year'],
+                term=config.Config.CURRENT_TERM
+            )
+        elif len(fee_type_ids) == 1:
+            balances = FinancialManager.get_student_balances(
+                academic_year=params['academic_year'],
+                fee_type_id=fee_type_ids[0],
+                term=config.Config.CURRENT_TERM
+            )
+        elif len(fee_type_ids) > 1:
+            merged = {}
+            for fid in fee_type_ids:
+                rows = FinancialManager.get_student_balances(
+                    academic_year=params['academic_year'],
+                    fee_type_id=fid,
+                    term=config.Config.CURRENT_TERM
+                ) or []
+                for row in rows:
+                    sid = row.get('student_id')
+                    if sid is None:
+                        continue
+                    if sid not in merged:
+                        merged[sid] = {
+                            'student_id': sid,
+                            'student_code': row.get('student_code'),
+                            'student_name': row.get('student_name'),
+                            'class': row.get('class'),
+                            'total_due': 0.0,
+                            'total_paid': 0.0,
+                            # Carry forward only once for multi-fee aggregation.
+                            'carried_balance': float(row.get('carried_balance') or 0)
+                        }
+                    merged[sid]['total_due'] += float(row.get('total_due') or 0)
+                    merged[sid]['total_paid'] += float(row.get('total_paid') or 0)
+
+            for item in merged.values():
+                bal = float(item['total_due']) - float(item['total_paid']) + float(item['carried_balance'])
+                balances.append({
+                    'student_id': item['student_id'],
+                    'student_code': item['student_code'],
+                    'student_name': item['student_name'],
+                    'class': item['class'],
+                    'total_due': item['total_due'],
+                    'total_paid': item['total_paid'],
+                    'carried_balance': item['carried_balance'],
+                    'balance': bal
+                })
 
         out = []
         for row in balances:
@@ -821,6 +1051,10 @@ class ReportsTab:
             if params['balance_filter'] == 'With Balance Only' and balance <= 0:
                 continue
             if params['balance_filter'] == 'Cleared Only' and balance > 0:
+                continue
+            if params['balance_filter'] == 'Unpaid Only' and not (balance > 0 and float(row.get('total_paid') or 0) <= 0):
+                continue
+            if params['balance_filter'] == 'Partial Only' and not (balance > 0 and float(row.get('total_paid') or 0) > 0):
                 continue
 
             out.append({
@@ -833,7 +1067,7 @@ class ReportsTab:
                 'balance': balance
             })
 
-        out.sort(key=lambda r: (-float(r.get('balance') or 0), r.get('class') or '', r.get('student_name') or ''))
+        out.sort(key=lambda r: (r.get('class') or '', r.get('student_name') or '', -float(r.get('balance') or 0)))
         if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
             return out[:config.Config.PREVIEW_LIMIT]
         return out
@@ -877,6 +1111,64 @@ class ReportsTab:
             query += f" LIMIT {config.Config.PREVIEW_LIMIT}"
         
         return db.execute_query(query, values, fetch=True)
+
+    def get_salary_report_data(self, params, preview=False):
+        """Get salary report data"""
+        year_month = (params.get('year_month') or date.today().strftime('%Y-%m')).strip()
+        try:
+            start_date = datetime.strptime(f"{year_month}-01", "%Y-%m-%d").date()
+        except Exception:
+            start_date = date.today().replace(day=1)
+            year_month = start_date.strftime('%Y-%m')
+        if start_date.month == 12:
+            end_exclusive = date(start_date.year + 1, 1, 1)
+        else:
+            end_exclusive = date(start_date.year, start_date.month + 1, 1)
+
+        query = """
+            SELECT
+                t.teacher_code,
+                CONCAT(t.first_name, ' ', t.last_name) AS teacher_name,
+                COALESCE(t.salary_amount, 0) AS base_salary,
+                COALESCE(t.allowance_amount, 0) AS allowance,
+                COALESCE(SUM(CASE
+                    WHEN tsa.status IN ('Approved', 'Deducted')
+                     AND tsa.advance_date >= %s
+                     AND tsa.advance_date < %s
+                    THEN tsa.advance_amount
+                    ELSE 0
+                END), 0) AS total_advances,
+                (COALESCE(t.salary_amount, 0) + COALESCE(t.allowance_amount, 0)
+                    - COALESCE(SUM(CASE
+                        WHEN tsa.status IN ('Approved', 'Deducted')
+                         AND tsa.advance_date >= %s
+                         AND tsa.advance_date < %s
+                        THEN tsa.advance_amount
+                        ELSE 0
+                    END), 0)) AS net_salary
+            FROM teachers t
+            LEFT JOIN teacher_salary_advances tsa ON tsa.teacher_id = t.teacher_id
+            WHERE t.is_active = 1
+            GROUP BY t.teacher_id, t.teacher_code, t.first_name, t.last_name, t.salary_amount, t.allowance_amount
+            ORDER BY t.last_name, t.first_name
+        """
+
+        rows = db.execute_query(query, (start_date, end_exclusive, start_date, end_exclusive), fetch=True) or []
+        out = []
+        for row in rows:
+            out.append({
+                'payroll_month': year_month,
+                'teacher_code': row.get('teacher_code'),
+                'teacher_name': row.get('teacher_name'),
+                'base_salary': float(row.get('base_salary') or 0),
+                'allowance': float(row.get('allowance') or 0),
+                'total_advances': float(row.get('total_advances') or 0),
+                'net_salary': float(row.get('net_salary') or 0),
+            })
+
+        if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
+            return out[:config.Config.PREVIEW_LIMIT]
+        return out
     
     def get_attendance_summary_data(self, params, preview=False):
         """Get attendance summary data"""
@@ -1272,7 +1564,18 @@ class ReportsTab:
                     filename,
                     class_filter=params['class_filter'],
                     balance_filter=params['balance_filter'],
-                    academic_year=params['academic_year']
+                    academic_year=params['academic_year'],
+                    fee_type_filter=params.get('fee_type_filter', 'All Fee Types')
+                )
+            elif self.current_report == 'salary_report':
+                generate_salary_report(filename, year_month=params.get('year_month'))
+            elif self.current_report in ['students_with_balance', 'students_unpaid', 'students_partial']:
+                generate_student_fees_report(
+                    filename,
+                    class_filter=params['class_filter'],
+                    balance_filter=params['balance_filter'],
+                    academic_year=params['academic_year'],
+                    fee_type_filter=params.get('fee_type_filter', 'All Fee Types')
                 )
             elif self.current_report == 'student_list':
                 generate_student_list_report(

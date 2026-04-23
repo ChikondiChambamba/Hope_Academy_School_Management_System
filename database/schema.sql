@@ -40,6 +40,7 @@ CREATE TABLE teachers (
     subject_specialization VARCHAR(100),
     hire_date DATE NOT NULL,
     salary_amount DECIMAL(10,2) DEFAULT 0.00,
+    allowance_amount DECIMAL(10,2) DEFAULT 0.00,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -61,7 +62,8 @@ CREATE TABLE fee_types (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
     INDEX idx_academic_year (academic_year),
-    INDEX idx_term (term)
+    INDEX idx_term (term),
+    INDEX idx_fee_types_year_term (academic_year, term)
 );
 
 -- Student Fees Table
@@ -71,7 +73,7 @@ CREATE TABLE student_fees (
     fee_type_id INT NOT NULL,
     amount_paid DECIMAL(10,2) NOT NULL,
     payment_date DATE NOT NULL,
-    payment_method ENUM('Cash', 'M-Pesa', 'Bank Transfer', 'Check', 'Other') DEFAULT 'Cash',
+    payment_method ENUM('Cash', 'Mobile money', 'Bank Transfer', 'Check', 'Other') DEFAULT 'Cash',
     receipt_number VARCHAR(50) UNIQUE,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -80,6 +82,8 @@ CREATE TABLE student_fees (
     FOREIGN KEY (fee_type_id) REFERENCES fee_types(fee_type_id) ON DELETE CASCADE,
     
     INDEX idx_student_id (student_id),
+    INDEX idx_student_fee_type (student_id, fee_type_id),
+    INDEX idx_fee_type_id (fee_type_id),
     INDEX idx_payment_date (payment_date),
     INDEX idx_receipt (receipt_number)
 );
@@ -136,6 +140,76 @@ CREATE TABLE student_term_fee_rollovers (
     FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
 );
 
+CREATE TABLE term_rollover_runs (
+    run_id INT PRIMARY KEY AUTO_INCREMENT,
+    academic_year VARCHAR(32) NOT NULL,
+    from_term VARCHAR(32) NOT NULL,
+    to_term VARCHAR(32) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PREVIEW',
+    total_students INT NOT NULL DEFAULT 0,
+    reset_students INT NOT NULL DEFAULT 0,
+    carry_students INT NOT NULL DEFAULT 0,
+    previous_outstanding_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    new_term_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    carry_forward_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    opening_balance_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    executed_by VARCHAR(100),
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL,
+    INDEX idx_rollover_run_lookup (academic_year, from_term, to_term, status)
+);
+
+CREATE TABLE term_rollover_run_items (
+    item_id INT PRIMARY KEY AUTO_INCREMENT,
+    run_id INT NOT NULL,
+    student_id INT NOT NULL,
+    student_code VARCHAR(20),
+    student_name VARCHAR(150),
+    class_name VARCHAR(50),
+    previous_outstanding DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    new_term_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    carry_forward_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    reset_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    opening_balance DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    payment_status VARCHAR(20) NOT NULL DEFAULT 'Paid',
+    carry_status VARCHAR(20) NOT NULL DEFAULT 'Reset',
+    details_json LONGTEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_rollover_run_student (run_id, student_id),
+    INDEX idx_rollover_item_student (student_id),
+    FOREIGN KEY (run_id) REFERENCES term_rollover_runs(run_id) ON DELETE CASCADE,
+    FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
+);
+
+CREATE TABLE student_term_fee_rollover_items (
+    rollover_item_id INT PRIMARY KEY AUTO_INCREMENT,
+    student_id INT NOT NULL,
+    from_academic_year VARCHAR(32) NOT NULL,
+    from_term VARCHAR(32) NOT NULL,
+    to_academic_year VARCHAR(32) NOT NULL,
+    to_term VARCHAR(32) NOT NULL,
+    source_fee_type_id INT NULL,
+    source_fee_name VARCHAR(100) NOT NULL,
+    source_is_required BOOLEAN DEFAULT TRUE,
+    source_is_class_specific BOOLEAN DEFAULT FALSE,
+    source_expected_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    source_paid_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    carried_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    source_status VARCHAR(20) NOT NULL DEFAULT 'Paid',
+    target_fee_type_id INT NULL,
+    target_fee_name VARCHAR(100),
+    target_applicable BOOLEAN DEFAULT FALSE,
+    run_id INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_rollover_student_source_target (
+        student_id, from_academic_year, from_term, to_academic_year, to_term, source_fee_name
+    ),
+    INDEX idx_rollover_items_target (to_academic_year, to_term),
+    INDEX idx_rollover_items_student (student_id),
+    FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
+);
+
 -- Teacher Salary Advances: track advances given to teachers
 CREATE TABLE teacher_salary_advances (
     advance_id INT PRIMARY KEY AUTO_INCREMENT,
@@ -183,7 +257,7 @@ CREATE TABLE expenses (
     description VARCHAR(200) NOT NULL,
     amount DECIMAL(10,2) NOT NULL,
     category VARCHAR(50),
-    payment_method ENUM('Cash', 'M-Pesa', 'Bank Transfer', 'Check', 'Other') DEFAULT 'Cash',
+    payment_method ENUM('Cash', 'Mobile money', 'Bank Transfer', 'Check', 'Other') DEFAULT 'Cash',
     receipt_number VARCHAR(50),
     notes TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

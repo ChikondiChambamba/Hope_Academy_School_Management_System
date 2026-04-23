@@ -770,7 +770,7 @@ class MainWindow:
     
     def open_manual(self):
         """Open user manual"""
-        manual_path = config.Config.BASE_DIR / "docs" / "user_manual.pdf"
+        manual_path = config.Config.RESOURCE_DIR / "docs" / "user_manual.pdf"
         if manual_path.exists():
             import os
             os.startfile(str(manual_path))

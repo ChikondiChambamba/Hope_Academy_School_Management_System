@@ -267,25 +267,8 @@ def run_database_maintenance():
     try:
         print("Running database maintenance...")
         
-        # Recalculate student balances
-        print("  Recalculating student balances...")
-        query = """
-            UPDATE students s
-            JOIN (
-                SELECT 
-                    student_id,
-                    COALESCE(SUM(amount_paid), 0) as total_paid
-                FROM student_fees
-                GROUP BY student_id
-            ) sf ON s.student_id = sf.student_id
-            SET s.balance = (
-                SELECT COALESCE(SUM(amount), 0) 
-                FROM fee_types 
-                WHERE academic_year = %s
-            ) - sf.total_paid
-            WHERE s.is_active = 1
-        """
-        db.execute_query(query, (config.Config.CURRENT_ACADEMIC_YEAR,))
+        # Balances are computed dynamically; no stored balance column is required.
+        print("  Skipping student balance recalculation (computed dynamically)...")
         
         # Update inventory total values
         print("  Updating inventory values...")
@@ -434,7 +417,7 @@ def backup_configuration():
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
     # Backup config.py
-    config_file = config.Config.BASE_DIR / 'config.py'
+    config_file = config.Config.RESOURCE_DIR / 'config.py'
     if config_file.exists():
         backup_file = backup_dir / f'config_{timestamp}.py'
         shutil.copy2(config_file, backup_file)

@@ -6,13 +6,14 @@ import tkinter as tk
 from tkinter import messagebox
 import sys
 import os
+import config
 
 # Add project root to Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from database.connection import DatabaseConnection
 from UI.main_window import MainWindow
-from utils.helpers import check_database_connection
+from utils.helpers import check_database_connection, setup_logging
 
 class Application:
     def __init__(self):
@@ -23,6 +24,9 @@ class Application:
     def setup_application(self):
         """Setup application window and database connection"""
         try:
+            setup_logging()
+            config.Config.log_runtime_context("application_setup")
+
             # Check database connection
             if not check_database_connection():
                 response = messagebox.askyesno(
@@ -83,9 +87,9 @@ class Application:
     def set_window_icon(self):
         """Set application icon"""
         try:
-            icon_path = os.path.join('assets', 'icons', 'app_icon.ico')
+            icon_path = config.Config.PATHS.get('assets', config.Config.RESOURCE_DIR / 'assets') / 'icons' / 'app_icon.ico'
             if os.path.exists(icon_path):
-                self.root.iconbitmap(icon_path)
+                self.root.iconbitmap(str(icon_path))
             else:
                 # Override default Tk icon with an empty image to remove the tkinter symbol
                 try:

@@ -8,6 +8,7 @@ from ..financial_report import (
     generate_expense_report,
     generate_financial_summary_report,
     generate_student_fees_report,
+    generate_salary_report,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     'generate_expense_report',
     'generate_financial_summary_report',
     'generate_student_fees_report',
+    'generate_salary_report',
 ]

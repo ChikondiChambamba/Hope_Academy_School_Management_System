@@ -1,6 +1,46 @@
 """
 Common SQL queries for the School Management System
 """
+from database.connection import db
+
+_HAS_STUDENT_IS_NEW = None
+
+def student_is_new_available() -> bool:
+    """Return True if students.is_new column exists in the current DB."""
+    global _HAS_STUDENT_IS_NEW
+    if _HAS_STUDENT_IS_NEW is None:
+        try:
+            q = """
+                SELECT 1
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'students'
+                  AND COLUMN_NAME = 'is_new'
+                LIMIT 1
+            """
+            res = db.execute_query(q, fetch=True)
+            _HAS_STUDENT_IS_NEW = bool(res)
+        except Exception:
+            _HAS_STUDENT_IS_NEW = False
+    return _HAS_STUDENT_IS_NEW
+
+def _normalize_is_new(sql: str) -> str:
+    """Remove is_new references if the column doesn't exist."""
+    if student_is_new_available():
+        return sql
+    return sql.replace("AND s.is_new = 0", "AND 1=0")
+
+def get_all_students_query() -> str:
+    return _normalize_is_new(Queries.GET_ALL_STUDENTS)
+
+def get_student_by_id_query() -> str:
+    return _normalize_is_new(Queries.GET_STUDENT_BY_ID)
+
+def search_students_query() -> str:
+    return _normalize_is_new(Queries.SEARCH_STUDENTS)
+
+def get_student_fee_details_query() -> str:
+    return _normalize_is_new(Queries.GET_STUDENT_FEE_DETAILS)
 
 class Queries:
     """Collection of SQL queries used in the system"""
@@ -28,6 +68,20 @@ class Queries:
         LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
         LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
         WHERE s.is_active = 1
+          AND (
+                NOT EXISTS (
+                    SELECT 1 FROM fee_type_classes ftc0
+                    WHERE ftc0.fee_type_id = ft.fee_type_id
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM fee_type_classes ftc
+                    JOIN classes c ON c.class_id = ftc.class_id
+                    WHERE ftc.fee_type_id = ft.fee_type_id
+                      AND LOWER(c.class_name) = LOWER(s.class)
+                      AND (ftc.academic_year IS NULL OR ftc.academic_year = '' OR ftc.academic_year = %s)
+                )
+          )
         GROUP BY s.student_id
         ORDER BY s.last_name, s.first_name
     """
@@ -54,6 +108,20 @@ class Queries:
         LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
         LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
         WHERE s.student_id = %s
+          AND (
+                NOT EXISTS (
+                    SELECT 1 FROM fee_type_classes ftc0
+                    WHERE ftc0.fee_type_id = ft.fee_type_id
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM fee_type_classes ftc
+                    JOIN classes c ON c.class_id = ftc.class_id
+                    WHERE ftc.fee_type_id = ft.fee_type_id
+                      AND LOWER(c.class_name) = LOWER(s.class)
+                      AND (ftc.academic_year IS NULL OR ftc.academic_year = '' OR ftc.academic_year = %s)
+                )
+          )
         GROUP BY s.student_id
     """
     
@@ -80,6 +148,20 @@ class Queries:
         LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
         WHERE s.is_active = 1 
           AND (s.first_name LIKE %s OR s.last_name LIKE %s OR s.student_code LIKE %s)
+          AND (
+                NOT EXISTS (
+                    SELECT 1 FROM fee_type_classes ftc0
+                    WHERE ftc0.fee_type_id = ft.fee_type_id
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM fee_type_classes ftc
+                    JOIN classes c ON c.class_id = ftc.class_id
+                    WHERE ftc.fee_type_id = ft.fee_type_id
+                      AND LOWER(c.class_name) = LOWER(s.class)
+                      AND (ftc.academic_year IS NULL OR ftc.academic_year = '' OR ftc.academic_year = %s)
+                )
+          )
         GROUP BY s.student_id
         ORDER BY s.last_name, s.first_name
     """
@@ -103,7 +185,31 @@ class Queries:
         LEFT JOIN student_fee_exemptions sfe ON sfe.student_id = s.student_id AND sfe.fee_type_id = ft.fee_type_id
         LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.student_id = s.student_id
         WHERE ft.academic_year = %s
-          AND (ft.term = %s OR ft.term IS NULL OR ft.term = '')
+          AND (
+                NOT EXISTS (
+                    SELECT 1 FROM fee_type_classes ftc0
+                    WHERE ftc0.fee_type_id = ft.fee_type_id
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM fee_type_classes ftc
+                    JOIN classes c ON c.class_id = ftc.class_id
+                    WHERE ftc.fee_type_id = ft.fee_type_id
+                      AND LOWER(c.class_name) = LOWER(s.class)
+                      AND (ftc.academic_year IS NULL OR ftc.academic_year = '' OR ftc.academic_year = %s)
+                )
+          )
+          AND (
+                ft.term = %s
+                OR ft.term IS NULL
+                OR ft.term = ''
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM fee_types ftx
+                    WHERE ftx.academic_year = %s
+                      AND ftx.term = %s
+                )
+          )
         GROUP BY ft.fee_type_id, ft.fee_name, ft.amount
         ORDER BY ft.fee_name
     """

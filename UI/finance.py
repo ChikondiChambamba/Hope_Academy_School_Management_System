@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, date
 import re
+import json
 import config
 from database.connection import db
 from utils.helpers import format_currency, parse_currency
@@ -25,9 +26,11 @@ class FinanceTab:
         self.expenses_frame = ttk.Frame(self.notebook)
         self.financial_summary_frame = ttk.Frame(self.notebook)
         self.staff_salaries_frame = ttk.Frame(self.notebook)
+        self.term_rollover_frame = ttk.Frame(self.notebook)
         
         self.notebook.add(self.fee_payments_frame, text="Fee Payments")
         self.notebook.add(self.student_balances_frame, text="Student Balances")
+        self.notebook.add(self.term_rollover_frame, text="Term Rollover")
         self.notebook.add(self.expenses_frame, text="Expenses")
         self.notebook.add(self.financial_summary_frame, text="Financial Summary")
         self.notebook.add(self.staff_salaries_frame, text="Staff Salaries")
@@ -38,6 +41,7 @@ class FinanceTab:
         # Setup each tab
         self.setup_fee_payments_tab()
         self.setup_student_balances_tab()
+        self.setup_term_rollover_tab()
         self.setup_expenses_tab()
         self.setup_financial_summary_tab()
         self.setup_staff_salaries_tab()
@@ -59,6 +63,7 @@ class FinanceTab:
         # Allow manual entry (typing) while keeping dropdown choices
         self.student_combo = ttk.Combobox(form_frame, textvariable=self.student_var, state='normal')
         self.student_combo.grid(row=0, column=1, pady=5, padx=5, sticky='ew')
+        self.student_combo.bind('<<ComboboxSelected>>', self.on_student_selected)
         
         # Fee type selection
         ttk.Label(form_frame, text="Fee Type:").grid(row=1, column=0, sticky='w', pady=5)
@@ -110,8 +115,8 @@ class FinanceTab:
         right_frame = ttk.Frame(self.fee_payments_frame)
         right_frame.pack(side='right', fill='both', expand=True, padx=10, pady=10)
         
-        # Recent payments table
-        table_frame = ttk.LabelFrame(right_frame, text="Recent Payments", padding=10)
+        # Payments table
+        table_frame = ttk.LabelFrame(right_frame, text="Payments", padding=10)
         table_frame.pack(fill='both', expand=True)
         
         columns = ['ID', 'Date', 'Student', 'Fee Type', 'Amount', 'Method', 'Receipt']
@@ -148,7 +153,7 @@ class FinanceTab:
         # Setup payments context menu (edit/delete)
         self.setup_payments_context_menu()
 
-        # Filter frame for recent payments (filter by student or fee type)
+        # Filter frame for payments (filter by student or fee type)
         filter_frame = ttk.Frame(right_frame)
         filter_frame.pack(fill='x', pady=(5, 10))
 
@@ -161,6 +166,15 @@ class FinanceTab:
         self.filter_student_var = tk.StringVar()
         self.filter_student_combo = ttk.Combobox(filter_frame, textvariable=self.filter_student_var, width=30)
         self.filter_student_combo.pack(side='left', padx=(0,5))
+
+        ttk.Label(filter_frame, text='Show:').pack(side='left', padx=(10,5))
+        self.show_all_payments_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            filter_frame,
+            text='All payments',
+            variable=self.show_all_payments_var,
+            command=self.load_recent_payments
+        ).pack(side='left', padx=(0,5))
 
         ttk.Button(filter_frame, text='Search', command=self.search_payments).pack(side='left', padx=4)
         ttk.Button(filter_frame, text='Clear', command=lambda: (self.filter_fee_var.set(''), self.filter_student_var.set(''), self.load_recent_payments())).pack(side='left')
@@ -180,7 +194,7 @@ class FinanceTab:
         # Status filter
         ttk.Label(top_frame, text="Status:").pack(side='left', padx=5)
         self.balance_status_var = tk.StringVar(value="All")
-        status_options = ['All', 'Paid', 'Partial', 'Unpaid']
+        status_options = ['All', 'Paid', 'Partial', 'Unpaid', 'Carried Forward']
         ttk.Combobox(top_frame, textvariable=self.balance_status_var, values=status_options, width=10).pack(side='left', padx=5)
 
         # Fee Type filter (new)
@@ -242,6 +256,316 @@ class FinanceTab:
         
         # Right-click menu for actions
         self.setup_balance_context_menu()
+
+    def setup_term_rollover_tab(self):
+        """Setup dedicated term rollover management UI."""
+        header = ttk.LabelFrame(self.term_rollover_frame, text="Term Rollover Management", padding=12)
+        header.pack(fill='x', padx=10, pady=10)
+
+        ttk.Label(header, text="Current Term:").grid(row=0, column=0, sticky='w', padx=4, pady=4)
+        self.rollover_current_term_var = tk.StringVar(value=config.Config.CURRENT_TERM)
+        ttk.Label(header, textvariable=self.rollover_current_term_var, font=('Arial', 11, 'bold')).grid(row=0, column=1, sticky='w', padx=4, pady=4)
+
+        ttk.Label(header, text="Next Term:").grid(row=0, column=2, sticky='w', padx=(20, 4), pady=4)
+        self.rollover_next_term_var = tk.StringVar()
+        ttk.Combobox(
+            header,
+            textvariable=self.rollover_next_term_var,
+            values=getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3']),
+            width=16,
+            state='readonly'
+        ).grid(row=0, column=3, sticky='w', padx=4, pady=4)
+
+        ttk.Label(header, text="Term Start Date:").grid(row=0, column=4, sticky='w', padx=(20, 4), pady=4)
+        self.rollover_start_date_var = tk.StringVar(value=(getattr(config.Config, 'TERM_START_DATE', '') or date.today().strftime('%Y-%m-%d')))
+        ttk.Entry(header, textvariable=self.rollover_start_date_var, width=16).grid(row=0, column=5, sticky='w', padx=4, pady=4)
+
+        ttk.Label(header, text="Class Filter:").grid(row=1, column=0, sticky='w', padx=4, pady=4)
+        self.rollover_class_var = tk.StringVar(value='All')
+        self.rollover_class_combo = ttk.Combobox(header, textvariable=self.rollover_class_var, width=16, state='readonly')
+        self.rollover_class_combo.grid(row=1, column=1, sticky='w', padx=4, pady=4)
+        self.rollover_class_combo.bind('<<ComboboxSelected>>', lambda e: self._render_rollover_preview())
+
+        ttk.Label(header, text="Student Search:").grid(row=1, column=2, sticky='w', padx=(20, 4), pady=4)
+        self.rollover_search_var = tk.StringVar()
+        search_entry = ttk.Entry(header, textvariable=self.rollover_search_var, width=24)
+        search_entry.grid(row=1, column=3, sticky='w', padx=4, pady=4)
+        search_entry.bind('<KeyRelease>', lambda e: self._render_rollover_preview())
+
+        ttk.Label(header, text="Status:").grid(row=1, column=4, sticky='w', padx=(20, 4), pady=4)
+        self.rollover_status_var = tk.StringVar(value='All')
+        status_combo = ttk.Combobox(
+            header,
+            textvariable=self.rollover_status_var,
+            values=['All', 'Paid', 'Partial', 'Unpaid', 'Carried Forward', 'Reset'],
+            width=16,
+            state='readonly'
+        )
+        status_combo.grid(row=1, column=5, sticky='w', padx=4, pady=4)
+        status_combo.bind('<<ComboboxSelected>>', lambda e: self._render_rollover_preview())
+
+        button_row = ttk.Frame(header)
+        button_row.grid(row=2, column=0, columnspan=6, sticky='w', pady=(8, 0))
+        ttk.Button(button_row, text="Preview Rollover", command=self.preview_term_rollover).pack(side='left', padx=4)
+        ttk.Button(button_row, text="Execute Rollover", command=self.execute_term_rollover).pack(side='left', padx=4)
+        ttk.Button(button_row, text="Refresh", command=self.load_term_rollover_data).pack(side='left', padx=4)
+        ttk.Button(button_row, text="View Selected Details", command=self.show_rollover_item_details).pack(side='left', padx=4)
+
+        summary = ttk.Frame(self.term_rollover_frame)
+        summary.pack(fill='x', padx=10, pady=(0, 10))
+        cards = [
+            ('Students', 'rollover_total_students_var'),
+            ('Reset', 'rollover_reset_students_var'),
+            ('Carry Forward', 'rollover_carry_students_var'),
+            ('Prev Outstanding', 'rollover_prev_total_var'),
+            ('New Term Fees', 'rollover_new_total_var'),
+            ('Opening Balance', 'rollover_opening_total_var')
+        ]
+        for label, var_name in cards:
+            card = ttk.LabelFrame(summary, text=label, padding=8)
+            card.pack(side='left', fill='x', expand=True, padx=4)
+            setattr(self, var_name, tk.StringVar(value='0'))
+            ttk.Label(card, textvariable=getattr(self, var_name), font=('Arial', 11, 'bold')).pack(anchor='center')
+
+        ttk.Label(self.term_rollover_frame, text="Preview and Results", font=('Arial', 11, 'bold')).pack(anchor='w', padx=12)
+        table_frame = ttk.Frame(self.term_rollover_frame)
+        table_frame.pack(fill='both', expand=True, padx=10, pady=10)
+
+        rollover_cols = [
+            'ID', 'Student', 'Class', 'Prev Outstanding', 'New Term Fees',
+            'Carry Forward', 'Reset', 'Opening Balance', 'Status'
+        ]
+        self.rollover_tree = ttk.Treeview(table_frame, columns=rollover_cols, show='headings', height=18)
+        for col in rollover_cols:
+            self.rollover_tree.heading(col, text=col)
+            self.rollover_tree.column(col, width=120)
+        self.rollover_tree.column('Student', width=180)
+        self.rollover_tree.column('Class', width=100)
+        self.rollover_tree.column('Status', width=120)
+
+        rollover_scroll = ttk.Scrollbar(table_frame, orient='vertical', command=self.rollover_tree.yview)
+        self.rollover_tree.configure(yscrollcommand=rollover_scroll.set)
+        self.rollover_tree.pack(side='left', fill='both', expand=True)
+        rollover_scroll.pack(side='right', fill='y')
+        self.rollover_tree.bind('<Double-1>', lambda e: self.show_rollover_item_details())
+
+        footer = ttk.Frame(self.term_rollover_frame)
+        footer.pack(fill='x', padx=10, pady=(0, 10))
+        self.rollover_info_var = tk.StringVar(value='Preview the next term before executing rollover.')
+        ttk.Label(footer, textvariable=self.rollover_info_var).pack(side='left')
+
+    def _update_rollover_summary(self, preview_data=None):
+        """Update rollover summary cards from preview data."""
+        summary = (preview_data or {}).get('summary') or {}
+        self.rollover_total_students_var.set(str(summary.get('total_students', 0)))
+        self.rollover_reset_students_var.set(str(summary.get('reset_students', 0)))
+        self.rollover_carry_students_var.set(str(summary.get('carry_students', 0)))
+        self.rollover_prev_total_var.set(format_currency(float(summary.get('previous_outstanding_total', 0) or 0)))
+        self.rollover_new_total_var.set(format_currency(float(summary.get('new_term_total', 0) or 0)))
+        self.rollover_opening_total_var.set(format_currency(float(summary.get('opening_balance_total', 0) or 0)))
+
+    def _filtered_rollover_rows(self, rows):
+        """Apply UI filters to rollover preview rows."""
+        class_filter = self.rollover_class_var.get() or 'All'
+        status_filter = self.rollover_status_var.get() or 'All'
+        search_term = (self.rollover_search_var.get() or '').strip().lower()
+        out = []
+        for row in rows or []:
+            if class_filter != 'All' and row.get('class') != class_filter:
+                continue
+            if status_filter != 'All':
+                carry_status = row.get('carry_status') or ''
+                pay_status = row.get('payment_status') or ''
+                if status_filter in ('Carried Forward', 'Reset'):
+                    if carry_status != status_filter:
+                        continue
+                elif pay_status != status_filter:
+                    continue
+            if search_term:
+                haystack = f"{row.get('student_name', '')} {row.get('student_code', '')}".lower()
+                if search_term not in haystack:
+                    continue
+            out.append(row)
+        return out
+
+    def _render_rollover_preview(self):
+        """Render rollover rows currently loaded in memory."""
+        for item in self.rollover_tree.get_children():
+            self.rollover_tree.delete(item)
+
+        rows = self._filtered_rollover_rows(getattr(self, '_rollover_preview_rows', []))
+        for row in rows:
+            status = row.get('carry_status') if row.get('carry_status') == 'Carried Forward' else row.get('payment_status')
+            self.rollover_tree.insert('', 'end', values=(
+                row.get('student_id'),
+                row.get('student_name'),
+                row.get('class'),
+                format_currency(float(row.get('previous_outstanding') or 0)),
+                format_currency(float(row.get('new_term_total') or 0)),
+                format_currency(float(row.get('carry_forward_total') or 0)),
+                format_currency(float(row.get('reset_amount') or 0)),
+                format_currency(float(row.get('opening_balance') or 0)),
+                status
+            ))
+
+    def load_term_rollover_data(self):
+        """Load rollover defaults and latest executed summary."""
+        try:
+            from models.finance import FinancialManager
+            self.rollover_current_term_var.set(config.Config.CURRENT_TERM)
+            next_term = FinancialManager._get_next_term_name(config.Config.CURRENT_TERM)
+            self.rollover_next_term_var.set(next_term)
+            self.rollover_class_combo['values'] = tuple(self.balance_class_combo['values']) if self.balance_class_combo['values'] else ('All',)
+            latest = FinancialManager.get_latest_rollover_run()
+            if latest:
+                self.rollover_info_var.set(
+                    f"Last completed rollover: {latest.get('from_term')} -> {latest.get('to_term')} on {latest.get('completed_at') or latest.get('created_at')}"
+                )
+                self._update_rollover_summary({'summary': {
+                    'total_students': latest.get('total_students', 0),
+                    'reset_students': latest.get('reset_students', 0),
+                    'carry_students': latest.get('carry_students', 0),
+                    'previous_outstanding_total': latest.get('previous_outstanding_total', 0),
+                    'new_term_total': latest.get('new_term_total', 0),
+                    'opening_balance_total': latest.get('opening_balance_total', 0)
+                }})
+            else:
+                self._update_rollover_summary({})
+                self.rollover_info_var.set('Preview the next term before executing rollover.')
+            self._rollover_preview_rows = []
+            self._rollover_preview = None
+            self._render_rollover_preview()
+        except Exception as e:
+            print(f"Error loading rollover data: {e}")
+
+    def preview_term_rollover(self):
+        """Generate rollover preview using centralized backend service."""
+        try:
+            from models.finance import FinancialManager
+            to_term = self.rollover_next_term_var.get().strip() or FinancialManager._get_next_term_name(config.Config.CURRENT_TERM)
+            preview = FinancialManager.get_term_rollover_preview(
+                academic_year=config.Config.CURRENT_ACADEMIC_YEAR,
+                from_term=config.Config.CURRENT_TERM,
+                to_term=to_term
+            )
+            self._rollover_preview = preview
+            self._rollover_preview_rows = preview.get('rows') or []
+            self._update_rollover_summary(preview)
+            self._render_rollover_preview()
+            info_message = (
+                f"Preview ready for {preview.get('from_term')} -> {preview.get('to_term')}. Review and confirm before execution."
+            )
+            warnings = preview.get('warnings') or []
+            if warnings:
+                info_message = f"{info_message} Warning: {' '.join(warnings)}"
+            self.rollover_info_var.set(info_message)
+        except Exception as e:
+            messagebox.showerror("Preview Failed", f"Failed to build rollover preview: {e}")
+
+    def execute_term_rollover(self):
+        """Execute rollover after explicit confirmation."""
+        try:
+            from models.finance import FinancialManager
+            from_term = config.Config.CURRENT_TERM
+            to_term = self.rollover_next_term_var.get().strip() or FinancialManager._get_next_term_name(from_term)
+            if from_term == to_term:
+                messagebox.showwarning("Invalid Term", "Next term must be different from the current term.")
+                return
+
+            preview = getattr(self, '_rollover_preview', None)
+            if not preview or preview.get('to_term') != to_term or preview.get('from_term') != from_term:
+                self.preview_term_rollover()
+                preview = getattr(self, '_rollover_preview', None)
+            if not preview:
+                return
+
+            summary = preview.get('summary') or {}
+            confirm = messagebox.askyesno(
+                "Confirm Term Rollover",
+                f"Execute rollover from {from_term} to {to_term}?\n\n"
+                f"Students: {summary.get('total_students', 0)}\n"
+                f"Carry Forward: {summary.get('carry_students', 0)}\n"
+                f"Reset: {summary.get('reset_students', 0)}\n"
+                f"Opening Balance Total: {format_currency(float(summary.get('opening_balance_total', 0) or 0))}\n\n"
+                f"This will update the current term and write rollover records."
+            )
+            if not confirm:
+                return
+
+            result = FinancialManager.execute_term_rollover(
+                academic_year=config.Config.CURRENT_ACADEMIC_YEAR,
+                from_term=from_term,
+                to_term=to_term,
+                term_start_date=(self.rollover_start_date_var.get().strip() or None)
+            )
+            self._rollover_preview = result
+            self._rollover_preview_rows = result.get('rows') or []
+            self.rollover_current_term_var.set(config.Config.CURRENT_TERM)
+            self.rollover_next_term_var.set(FinancialManager._get_next_term_name(config.Config.CURRENT_TERM))
+            self._update_rollover_summary(result)
+            self._render_rollover_preview()
+            self.load_fee_types()
+            self.load_student_balances()
+            self.load_financial_summary()
+            self.rollover_info_var.set(
+                f"Rollover completed successfully. Current term is now {config.Config.CURRENT_TERM}."
+            )
+            cloned_fee_types = int(result.get('cloned_fee_types', 0) or 0)
+            messagebox.showinfo(
+                "Rollover Complete",
+                f"Term rollover to {config.Config.CURRENT_TERM} completed successfully."
+                + (f"\n\nFee types copied from the previous term: {cloned_fee_types}" if cloned_fee_types > 0 else "")
+            )
+        except Exception as e:
+            messagebox.showerror("Rollover Failed", f"Failed to execute rollover: {e}")
+
+    def show_rollover_item_details(self):
+        """Show per-student rollover detail breakdown."""
+        selected = self.rollover_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Select a student from the rollover preview.")
+            return
+        values = self.rollover_tree.item(selected[0], 'values')
+        student_id = int(values[0])
+        row = next((r for r in getattr(self, '_rollover_preview_rows', []) if int(r.get('student_id') or 0) == student_id), None)
+        if not row:
+            messagebox.showinfo("Details", "No preview details available for the selected student.")
+            return
+
+        dialog = tk.Toplevel(self.frame)
+        dialog.title(f"Rollover Details - {row.get('student_name')}")
+        dialog.geometry("900x420")
+        dialog.transient(self.frame)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text=f"{row.get('student_name')} | Prev Outstanding: {format_currency(float(row.get('previous_outstanding') or 0))} | Opening Balance: {format_currency(float(row.get('opening_balance') or 0))}",
+            font=('Arial', 10, 'bold')
+        ).pack(anchor='w', padx=10, pady=10)
+
+        columns = ['Source', 'Fee', 'Expected', 'Paid', 'Outstanding', 'Carry', 'Reset', 'Status']
+        tree = ttk.Treeview(dialog, columns=columns, show='headings', height=14)
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=100)
+        tree.column('Fee', width=200)
+        tree.pack(side='left', fill='both', expand=True, padx=10, pady=10)
+        scroll = ttk.Scrollbar(dialog, orient='vertical', command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y', pady=10)
+
+        for detail in row.get('details') or []:
+            tree.insert('', 'end', values=(
+                detail.get('source'),
+                detail.get('fee_name'),
+                format_currency(float(detail.get('expected_amount') or 0)),
+                format_currency(float(detail.get('paid_amount') or 0)),
+                format_currency(float(detail.get('outstanding') or 0)),
+                format_currency(float(detail.get('carried_amount') or 0)),
+                format_currency(float(detail.get('reset_amount') or 0)),
+                detail.get('status')
+            ))
 
     def setup_payments_context_menu(self):
         """Setup context menu for payments tree"""
@@ -383,7 +707,7 @@ class FinanceTab:
                 ttk.Combobox(form_frame, textvariable=getattr(self, var_name), 
                            values=categories, width=23).grid(row=i, column=1, pady=5, padx=5, sticky='w')
             elif "method" in var_name:
-                methods = ['Cash', 'M-Pesa', 'Bank Transfer', 'Check', 'Other']
+                methods = ['Cash', 'Mobile money', 'Bank Transfer', 'Check', 'Other']
                 ttk.Combobox(form_frame, textvariable=getattr(self, var_name), 
                            values=methods, width=23).grid(row=i, column=1, pady=5, padx=5, sticky='w')
             else:
@@ -552,8 +876,33 @@ class FinanceTab:
         ttk.Label(top_frame, text="Status:").pack(side='left', padx=5)
         self.staff_status_var = tk.StringVar(value="All")
         status_vals = ['All', 'Pending', 'Approved', 'Deducted']
-        ttk.Combobox(top_frame, textvariable=self.staff_status_var, values=status_vals, state='readonly', width=12).pack(side='left', padx=5)
-        
+        self.staff_status_combo = ttk.Combobox(top_frame, textvariable=self.staff_status_var, values=status_vals, state='readonly', width=12)
+        self.staff_status_combo.pack(side='left', padx=5)
+        self.staff_status_combo.bind('<<ComboboxSelected>>', lambda e: self.load_staff_salaries())
+
+        ttk.Label(top_frame, text="Month:").pack(side='left', padx=(10, 5))
+        self.salary_month_var = tk.StringVar(value=date.today().strftime('%Y-%m'))
+        self.salary_month_combo = ttk.Combobox(
+            top_frame,
+            textvariable=self.salary_month_var,
+            values=self._get_salary_month_options(),
+            state='readonly',
+            width=10
+        )
+        self.salary_month_combo.pack(side='left', padx=5)
+        self.salary_month_combo.bind('<<ComboboxSelected>>', lambda e: self.load_staff_salaries())
+
+        # Salary totals summary
+        self.total_salary_only_var = tk.StringVar(value="---")
+        self.total_salary_with_allowances_var = tk.StringVar(value="---")
+        self.total_salary_net_var = tk.StringVar(value="---")
+        ttk.Label(top_frame, text="Salaries Only:").pack(side='left', padx=(20, 5))
+        ttk.Label(top_frame, textvariable=self.total_salary_only_var, font=('Arial', 10, 'bold')).pack(side='left', padx=5)
+        ttk.Label(top_frame, text="Salaries + Allowances:").pack(side='left', padx=(20, 5))
+        ttk.Label(top_frame, textvariable=self.total_salary_with_allowances_var, font=('Arial', 10, 'bold')).pack(side='left', padx=5)
+        ttk.Label(top_frame, text="Net Payable:").pack(side='left', padx=(20, 5))
+        ttk.Label(top_frame, textvariable=self.total_salary_net_var, font=('Arial', 10, 'bold')).pack(side='left', padx=5)
+
         ttk.Button(top_frame, text="Refresh", command=self.load_staff_salaries).pack(side='right', padx=5)
         
         # Left frame: Teacher salary info
@@ -568,6 +917,7 @@ class FinanceTab:
             ("Teacher Code:", "staff_code_var"),
             ("Teacher Name:", "staff_name_var"),
             ("Base Salary:", "staff_salary_var"),
+            ("Allowance:", "staff_allowance_var"),
             ("Total Advances:", "staff_advances_var"),
             ("Net Salary:", "staff_net_var"),
             ("Status:", "staff_salary_status_var")
@@ -579,6 +929,21 @@ class FinanceTab:
             ttk.Label(row, text=label_text, width=15).pack(side='left')
             setattr(self, var_name, tk.StringVar(value="---"))
             ttk.Label(row, textvariable=getattr(self, var_name), font=('Arial', 10, 'bold')).pack(side='left', padx=10)
+
+        # Monthly salary payment status (per selected month)
+        paid_row = ttk.Frame(info_frame)
+        paid_row.pack(fill='x', pady=8)
+        self.salary_paid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            paid_row,
+            text="Salary Paid (selected month)",
+            variable=self.salary_paid_var
+        ).pack(side='left')
+        ttk.Button(
+            paid_row,
+            text="Update Paid Status",
+            command=self.update_salary_paid_status
+        ).pack(side='left', padx=10)
         
         # Record advance form
         advance_frame = ttk.LabelFrame(left_frame, text="Record Salary Advance", padding=15)
@@ -605,6 +970,19 @@ class FinanceTab:
         btn_frame.grid(row=4, column=0, columnspan=2, pady=15)
         ttk.Button(btn_frame, text="Record Advance", command=self.record_salary_advance).pack(side='left', padx=5)
         ttk.Button(btn_frame, text="Clear", command=self.clear_advance_form).pack(side='left', padx=5)
+
+        # Allowance update form
+        allowance_frame = ttk.LabelFrame(left_frame, text="Set Allowance", padding=15)
+        allowance_frame.pack(fill='x', pady=(10, 0))
+
+        ttk.Label(allowance_frame, text="Allowance Amount:").grid(row=0, column=0, sticky='w', pady=5)
+        self.allowance_amount_var = tk.StringVar()
+        ttk.Entry(allowance_frame, textvariable=self.allowance_amount_var, width=25).grid(row=0, column=1, sticky='w', pady=5, padx=5)
+
+        allowance_btns = ttk.Frame(allowance_frame)
+        allowance_btns.grid(row=1, column=0, columnspan=2, pady=10)
+        ttk.Button(allowance_btns, text="Save Allowance", command=self.save_allowance).pack(side='left', padx=5)
+        ttk.Button(allowance_btns, text="Clear", command=self.clear_allowance_form).pack(side='left', padx=5)
         
         # Right frame: Advances list
         right_frame = ttk.Frame(self.staff_salaries_frame)
@@ -653,10 +1031,11 @@ class FinanceTab:
         left = ttk.LabelFrame(container, text='Fee Types', padding=10)
         left.pack(side='left', fill='both', expand=True, padx=5, pady=5)
 
-        self.fee_types_tree = ttk.Treeview(left, columns=('ID', 'Name', 'Amount', 'Term', 'Required'), show='headings', height=12)
-        for col in ('ID', 'Name', 'Amount', 'Term', 'Required'):
+        self.fee_types_tree = ttk.Treeview(left, columns=('ID', 'Name', 'Amount', 'Term', 'Required', 'Classes'), show='headings', height=12)
+        for col in ('ID', 'Name', 'Amount', 'Term', 'Required', 'Classes'):
             self.fee_types_tree.heading(col, text=col)
-            self.fee_types_tree.column(col, width=100)
+            width = 220 if col == 'Classes' else 100
+            self.fee_types_tree.column(col, width=width)
         self.fee_types_tree.pack(fill='both', expand=True)
 
         ft_btn_frame = ttk.Frame(left)
@@ -698,8 +1077,41 @@ class FinanceTab:
         # Load fee types
         try:
             fee_types = FeeType.get_all(config.Config.CURRENT_ACADEMIC_YEAR)
+            # Build fee_type_id -> "Class1, Class2" map for current academic year.
+            class_scope_map = {}
+            try:
+                scope_rows = db.execute_query(
+                    """
+                    SELECT
+                        ftc.fee_type_id,
+                        GROUP_CONCAT(DISTINCT c.class_name ORDER BY c.class_name SEPARATOR ', ') AS classes
+                    FROM fee_type_classes ftc
+                    JOIN classes c ON c.class_id = ftc.class_id
+                    WHERE (ftc.academic_year IS NULL OR ftc.academic_year = '' OR ftc.academic_year = %s)
+                    GROUP BY ftc.fee_type_id
+                    """,
+                    (config.Config.CURRENT_ACADEMIC_YEAR,),
+                    fetch=True
+                ) or []
+                class_scope_map = {int(r['fee_type_id']): (r.get('classes') or '') for r in scope_rows}
+            except Exception:
+                class_scope_map = {}
+
             for ft in fee_types:
-                self.fee_types_tree.insert('', 'end', values=(ft.fee_type_id, ft.fee_name, format_currency(ft.amount), ft.term, 'Yes' if ft.is_required else 'No'))
+                class_scope = class_scope_map.get(int(ft.fee_type_id), '')
+                scope_text = class_scope if class_scope else 'All'
+                self.fee_types_tree.insert(
+                    '',
+                    'end',
+                    values=(
+                        ft.fee_type_id,
+                        ft.fee_name,
+                        format_currency(ft.amount),
+                        ft.term,
+                        'Yes' if ft.is_required else 'No',
+                        scope_text
+                    )
+                )
         except Exception as e:
             print(f"Error loading fee types for manage tab: {e}")
 
@@ -945,11 +1357,16 @@ class FinanceTab:
         self.load_students_for_payment()
         self.load_fee_types()
         self.load_recent_payments()
-        self.load_student_balances()
         self.load_classes_for_filter()
+        self.load_student_balances()
+        self.load_term_rollover_data()
         self.load_recent_expenses()
         self.load_financial_summary()
         self.load_staff_salaries()
+
+    def refresh_data(self):
+        """Refresh finance tab content after application-wide changes."""
+        self.load_data()
     
     def load_students_for_payment(self):
         """Load students for payment combobox"""
@@ -968,28 +1385,81 @@ class FinanceTab:
         except Exception as e:
             print(f"Error loading students: {e}")
     
-    def load_fee_types(self):
-        """Load fee types for combobox"""
+    def _extract_selected_student_class(self) -> str:
+        """Extract class name from student combobox selection text."""
         try:
-            query = """
-                SELECT fee_type_id, fee_name, amount 
-                FROM fee_types 
-                WHERE academic_year = %s
-                ORDER BY fee_name
-            """
-            results = db.execute_query(query, (config.Config.CURRENT_ACADEMIC_YEAR,), fetch=True)
-            fee_list = [f"{r['fee_type_id']}: {r['fee_name']} ({format_currency(r['amount'])})" for r in results]
+            student_sel = (self.student_var.get() or '').strip()
+            m = re.search(r"\(([^)]+)\)", student_sel)
+            if m:
+                return m.group(1).strip()
+        except Exception:
+            pass
+        return ""
+
+    def on_student_selected(self, event=None):
+        """Reload fee types based on selected student's class."""
+        try:
+            class_name = self._extract_selected_student_class()
+            self.load_fee_types(class_name=class_name)
+            # reset selected fee type if it is no longer valid
+            current = (self.fee_type_var.get() or '').strip()
+            if current and current not in (self.fee_type_combo['values'] or []):
+                self.fee_type_var.set('')
+                self.amount_var.set('')
+        except Exception:
+            pass
+
+    def load_fee_types(self, class_name: str = ""):
+        """Load fee types for combobox (optionally filtered by student class)."""
+        try:
+            from models.finance import FeeType
+            if class_name:
+                fee_types = FeeType.get_applicable_for_class(
+                    class_name,
+                    config.Config.CURRENT_ACADEMIC_YEAR,
+                    config.Config.CURRENT_TERM
+                )
+                fee_list = [f"{ft.fee_type_id}: {ft.fee_name} ({format_currency(ft.amount)})" for ft in fee_types]
+            else:
+                query = """
+                    SELECT fee_type_id, fee_name, amount
+                    FROM fee_types
+                    WHERE academic_year = %s
+                      AND (
+                            term = %s
+                            OR term IS NULL
+                            OR term = ''
+                            OR NOT EXISTS (
+                                SELECT 1
+                                FROM fee_types ftx
+                                WHERE ftx.academic_year = %s
+                                  AND ftx.term = %s
+                            )
+                      )
+                    ORDER BY fee_name
+                """
+                results = db.execute_query(
+                    query,
+                    (
+                        config.Config.CURRENT_ACADEMIC_YEAR,
+                        config.Config.CURRENT_TERM,
+                        config.Config.CURRENT_ACADEMIC_YEAR,
+                        config.Config.CURRENT_TERM
+                    ),
+                    fetch=True
+                )
+                fee_list = [f"{r['fee_type_id']}: {r['fee_name']} ({format_currency(r['amount'])})" for r in results]
             self.fee_type_combo['values'] = fee_list
-            # populate filter combos as well
-            try:
-                self.filter_fee_combo['values'] = [''] + fee_list
-            except Exception:
-                pass
-            try:
-                # populate the student balances fee filter
-                self.balance_fee_combo['values'] = [''] + fee_list
-            except Exception:
-                pass
+            # Keep filter combos global; only payment form list should be class-scoped.
+            if not class_name:
+                try:
+                    self.filter_fee_combo['values'] = [''] + fee_list
+                except Exception:
+                    pass
+                try:
+                    self.balance_fee_combo['values'] = [''] + fee_list
+                except Exception:
+                    pass
         except Exception as e:
             print(f"Error loading fee types: {e}")
 
@@ -1060,7 +1530,7 @@ class FinanceTab:
             print(f"Error loading classes: {e}")
     
     def load_recent_payments(self):
-        """Load recent fee payments"""
+        """Load fee payments (recent or all, depending on filter)"""
         # Clear existing items
         for item in self.payments_tree.get_children():
             self.payments_tree.delete(item)
@@ -1086,9 +1556,9 @@ class FinanceTab:
                     fee_filter = int(fsel.split(':', 1)[0])
             except Exception:
                 fee_filter = None
-            # Parse selected student id (format: "<id>: ...")
+            # Parse selected student id (format: "<id>: ...") or fallback to name/code search
+            ssel = (self.filter_student_var.get() or '').strip()
             try:
-                ssel = (self.filter_student_var.get() or '').strip()
                 if ssel and ':' in ssel:
                     student_filter = int(ssel.split(':', 1)[0])
             except Exception:
@@ -1102,10 +1572,18 @@ class FinanceTab:
             if student_filter:
                 where_clauses.append('sf.student_id = %s')
                 params.append(student_filter)
+            elif ssel:
+                where_clauses.append('(CONCAT(s.first_name, \" \", s.last_name) LIKE %s OR s.student_code LIKE %s)')
+                params.append(f"%{ssel}%")
+                params.append(f"%{ssel}%")
 
             where_sql = ''
             if where_clauses:
                 where_sql = 'WHERE ' + ' AND '.join(where_clauses)
+
+            limit_clause = ""
+            if not getattr(self, 'show_all_payments_var', None) or not self.show_all_payments_var.get():
+                limit_clause = "LIMIT 200"
 
             query = f"""
                 SELECT 
@@ -1121,7 +1599,7 @@ class FinanceTab:
                 JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id
                 {where_sql}
                 ORDER BY sf.payment_date DESC, sf.created_at DESC
-                LIMIT 200
+                {limit_clause}
             """
             params_tuple = tuple(params) if params else None
             # Defensive check: ensure number of %s placeholders matches params provided
@@ -1207,6 +1685,8 @@ class FinanceTab:
                 paid = float(row.get('amount_paid') or 0)
                 total_fees = float(row.get('total_fees') or 0) + float(row.get('carried_balance') or 0)
                 status = "Paid" if balance <= 0 else "Partial" if paid > 0 else "Unpaid"
+                if float(row.get('carried_balance') or 0) > 0 and balance > 0:
+                    status = "Carried Forward"
 
                 # Apply status filter
                 if status_filter and status_filter != 'All' and status != status_filter:
@@ -1370,7 +1850,7 @@ class FinanceTab:
 
             ttk.Label(dlg, text='Method:').grid(row=4, column=0, sticky='e', padx=6, pady=4)
             method_var = tk.StringVar(value=row.get('payment_method') or 'Cash')
-            ttk.Combobox(dlg, textvariable=method_var, values=['Cash','M-Pesa','Bank Transfer','Check','Other'], state='readonly', width=20).grid(row=4, column=1, padx=6, pady=4, sticky='w')
+            ttk.Combobox(dlg, textvariable=method_var, values=['Cash','Mobile money','Bank Transfer','Check','Other'], state='readonly', width=20).grid(row=4, column=1, padx=6, pady=4, sticky='w')
 
             ttk.Label(dlg, text='Receipt No:').grid(row=5, column=0, sticky='e', padx=6, pady=4)
             receipt_var = tk.StringVar(value=row.get('receipt_number') or '')
@@ -1641,53 +2121,49 @@ class FinanceTab:
                 except Exception as e:
                     messagebox.showerror('Error', f'Failed to resolve fee type: {e}')
                     return
+
+            # Enforce fee type applicability to selected student's class
+            try:
+                class_name = self._extract_selected_student_class()
+                if not class_name:
+                    qclass = "SELECT class FROM students WHERE student_id=%s"
+                    cres = db.execute_query(qclass, (student_id,), fetch=True)
+                    class_name = (cres[0].get('class') if cres else '') or ''
+                from models.finance import FeeType
+                if not FeeType.is_applicable_to_class(fee_type_id, class_name, config.Config.CURRENT_ACADEMIC_YEAR):
+                    messagebox.showerror(
+                        "Error",
+                        f"This fee type does not apply to class '{class_name}'."
+                    )
+                    return
+            except Exception:
+                # Do not block payment on validation lookup failures
+                pass
             
             # Get description
             description = self.description_text.get("1.0", "end-1c").strip()
             
-            # Generate receipt number if not provided (atomic DB-backed sequence)
+            # Save via model to enforce exemption rules and receipt sequencing
+            from models.finance import FeePayment
             receipt_number = self.receipt_var.get().strip()
-            if not receipt_number:
-                # Use DB-backed per-day sequence for atomic generation
-                date_str = datetime.now().strftime('%Y%m%d')
-                try:
-                    # Atomic INSERT...ON DUPLICATE KEY UPDATE to increment sequence
-                    db.execute_query(
-                        "INSERT INTO receipt_sequence (seq_date, seq) VALUES (%s, 1) ON DUPLICATE KEY UPDATE seq = seq + 1",
-                        (date_str,)
-                    )
-                    # Fetch the updated sequence number
-                    res = db.execute_query("SELECT seq FROM receipt_sequence WHERE seq_date = %s", (date_str,), fetch=True)
-                    seq = res[0]['seq'] if res else 1
-                    receipt_number = f"REC-{date_str}-{seq:04d}"
-                except Exception as seq_err:
-                    # Fallback to COUNT-based if sequence table has issues
-                    print(f"Warning: sequence generation failed: {seq_err}")
-                    query = "SELECT COUNT(*) as count FROM student_fees WHERE receipt_number LIKE %s"
-                    result = db.execute_query(query, (f"REC-{date_str}-%",), fetch=True)
-                    next_num = result[0]['count'] + 1 if result else 1
-                    receipt_number = f"REC-{date_str}-{next_num:04d}"
-                self.receipt_var.set(receipt_number)
-            
-            # Insert payment
-            query = """
-                INSERT INTO student_fees 
-                (student_id, fee_type_id, amount_paid, payment_date, payment_method, receipt_number, description)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """
-            params = (
-                student_id,
-                fee_type_id,
-                amount,
-                self.date_var.get(),
-                self.payment_method_var.get(),
-                receipt_number,
-                description
+            payment = FeePayment(
+                student_id=student_id,
+                fee_type_id=fee_type_id,
+                amount_paid=amount,
+                payment_date=self.date_var.get(),
+                payment_method=self.payment_method_var.get(),
+                receipt_number=receipt_number,
+                description=description
             )
-            
-            db.execute_query(query, params)
-            
-            messagebox.showinfo("Success", f"Payment recorded successfully!\nReceipt: {receipt_number}")
+            success, msg = payment.save()
+            if not success:
+                messagebox.showerror("Error", msg)
+                return
+
+            # Update receipt if generated
+            if payment.receipt_number:
+                self.receipt_var.set(payment.receipt_number)
+            messagebox.showinfo("Success", msg)
             
             # Clear form and refresh data
             self.clear_payment_form()
@@ -1850,13 +2326,29 @@ class FinanceTab:
                 FROM fee_types ft
                 LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.student_id = %s
                 WHERE ft.academic_year = %s
-                  AND (ft.term = %s OR ft.term IS NULL OR ft.term = '')
+                  AND (
+                        ft.term = %s
+                        OR ft.term IS NULL
+                        OR ft.term = ''
+                        OR NOT EXISTS (
+                            SELECT 1
+                            FROM fee_types ftx
+                            WHERE ftx.academic_year = %s
+                              AND ftx.term = %s
+                        )
+                  )
                 GROUP BY ft.fee_type_id, ft.fee_name, ft.amount
                 ORDER BY ft.fee_name
             """
             results = db.execute_query(
                 query,
-                (student_id, config.Config.CURRENT_ACADEMIC_YEAR, config.Config.CURRENT_TERM),
+                (
+                    student_id,
+                    config.Config.CURRENT_ACADEMIC_YEAR,
+                    config.Config.CURRENT_TERM,
+                    config.Config.CURRENT_ACADEMIC_YEAR,
+                    config.Config.CURRENT_TERM
+                ),
                 fetch=True
             )
             
@@ -1989,6 +2481,13 @@ class FinanceTab:
             tree.pack(side='left', fill='both', expand=True, padx=10, pady=10)
             scrollbar.pack(side='right', fill='y', pady=10)
 
+            # Summary
+            summary_frame = ttk.Frame(dialog)
+            summary_frame.pack(fill='x', padx=10, pady=5)
+            summary_var = tk.StringVar(value="Total Payments: ")
+            summary_label = ttk.Label(summary_frame, textvariable=summary_var, font=('Arial', 10, 'bold'))
+            summary_label.pack()
+
             # Function to reload payments based on selected fee type
             def reload_payments():
                 # clear
@@ -2044,19 +2543,13 @@ class FinanceTab:
                     filtered_balance_var.set('')
 
                 # Update summary
-                summary_label.config(text=f"Total Payments: {format_currency(total)}")
+                summary_var.set(f"Total Payments: {format_currency(total)}")
 
             # Bind selection change
             fee_combo.bind('<<ComboboxSelected>>', lambda e: reload_payments())
 
             # initial load
             reload_payments()
-
-            # Summary
-            summary_frame = ttk.Frame(dialog)
-            summary_frame.pack(fill='x', padx=10, pady=5)
-            summary_label = ttk.Label(summary_frame, text="Total Payments: ", font=('Arial', 10, 'bold'))
-            summary_label.pack()
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load payment history: {str(e)}")
@@ -2080,7 +2573,7 @@ class FinanceTab:
         # Payment method
         ttk.Label(dialog, text="Payment Method:").pack(pady=5)
         method_var = tk.StringVar(value="Cash")
-        ttk.Combobox(dialog, textvariable=method_var, values=['Cash', 'M-Pesa', 'Bank Transfer', 'Check', 'Other']).pack(pady=5)
+        ttk.Combobox(dialog, textvariable=method_var, values=['Cash', 'Mobile money', 'Bank Transfer', 'Check', 'Other']).pack(pady=5)
         
         def process_payment():
             try:
@@ -2141,11 +2634,50 @@ class FinanceTab:
             messagebox.showerror("Error", f"Failed to print: {str(e)}")
 
     # Staff Salaries Methods
+    def _get_salary_month_options(self, months_back=24):
+        """Return list of YYYY-MM options from current month backwards."""
+        out = []
+        cur = date.today().replace(day=1)
+        for _ in range(months_back):
+            out.append(cur.strftime('%Y-%m'))
+            if cur.month == 1:
+                cur = cur.replace(year=cur.year - 1, month=12)
+            else:
+                cur = cur.replace(month=cur.month - 1)
+        return out
+
+    def _selected_salary_month(self):
+        """Get selected salary month in YYYY-MM."""
+        val = (self.salary_month_var.get() or '').strip()
+        if re.match(r'^\d{4}-\d{2}$', val):
+            return val
+        return date.today().strftime('%Y-%m')
+
+    def _salary_month_bounds(self):
+        """Get [start, next_month_start) dates for selected salary month."""
+        ym = self._selected_salary_month()
+        start = datetime.strptime(f"{ym}-01", "%Y-%m-%d").date()
+        if start.month == 12:
+            end_excl = date(start.year + 1, 1, 1)
+        else:
+            end_excl = date(start.year, start.month + 1, 1)
+        return start, end_excl
+
     def load_staff_salaries(self):
         """Load staff salaries and their advances"""
         try:
+            selected_month = self._selected_salary_month()
+            use_snapshot = True
+            try:
+                from models.finance import FinancialManager
+                FinancialManager.generate_monthly_salary_snapshot(selected_month)
+            except Exception as e:
+                # Keep staff salaries usable even if monthly snapshot table/migration fails.
+                use_snapshot = False
+                print(f"Salary snapshot fallback enabled: {e}")
+
             # Load teachers dropdown
-            query = "SELECT teacher_id, teacher_code, first_name, last_name, salary_amount FROM teachers WHERE is_active = 1 ORDER BY last_name, first_name"
+            query = "SELECT teacher_id, teacher_code, first_name, last_name, salary_amount, allowance_amount FROM teachers WHERE is_active = 1 ORDER BY last_name, first_name"
             teachers = db.execute_query(query, params=(), fetch=True)
             teacher_list = [f"{t['teacher_id']}: {t['first_name']} {t['last_name']} ({t['teacher_code']})" for t in teachers]
             self.staff_teacher_combo['values'] = teacher_list
@@ -2159,6 +2691,46 @@ class FinanceTab:
             else:
                 self.clear_staff_info()
                 self.load_advances_list(None)
+
+            # Update salary totals for all active staff
+            try:
+                if use_snapshot:
+                    total_query = """
+                        SELECT
+                            COALESCE(SUM(base_salary), 0) as total_salary_only,
+                            COALESCE(SUM(gross_salary), 0) as total_salary_with_allowances,
+                            COALESCE(SUM(net_salary), 0) as total_net_salary
+                        FROM teacher_salary_monthly
+                        WHERE payroll_month = %s
+                    """
+                    totals = db.execute_query(total_query, (selected_month,), fetch=True) or []
+                else:
+                    start_date, end_exclusive = self._salary_month_bounds()
+                    total_query = """
+                        SELECT
+                            COALESCE(SUM(COALESCE(t.salary_amount, 0)), 0) as total_salary_only,
+                            COALESCE(SUM(COALESCE(t.salary_amount, 0) + COALESCE(t.allowance_amount, 0)), 0) as total_salary_with_allowances,
+                            COALESCE(SUM(COALESCE(t.salary_amount, 0) + COALESCE(t.allowance_amount, 0) - COALESCE(a.total_advances, 0)), 0) as total_net_salary
+                        FROM teachers t
+                        LEFT JOIN (
+                            SELECT teacher_id, COALESCE(SUM(advance_amount), 0) AS total_advances
+                            FROM teacher_salary_advances
+                            WHERE status IN ('Approved', 'Deducted')
+                              AND advance_date >= %s
+                              AND advance_date < %s
+                            GROUP BY teacher_id
+                        ) a ON a.teacher_id = t.teacher_id
+                        WHERE t.is_active = 1
+                    """
+                    totals = db.execute_query(total_query, (start_date, end_exclusive), fetch=True) or []
+                row = totals[0] if totals else {}
+                self.total_salary_only_var.set(format_currency(float(row.get('total_salary_only') or 0)))
+                self.total_salary_with_allowances_var.set(format_currency(float(row.get('total_salary_with_allowances') or 0)))
+                self.total_salary_net_var.set(format_currency(float(row.get('total_net_salary') or 0)))
+            except Exception:
+                self.total_salary_only_var.set("---")
+                self.total_salary_with_allowances_var.set("---")
+                self.total_salary_net_var.set("---")
                 
         except Exception as e:
             print(f"Error loading staff salaries: {e}")
@@ -2173,31 +2745,80 @@ class FinanceTab:
                 return
             
             teacher_id = int(sel.split(':')[0])
+            selected_month = self._selected_salary_month()
             
             # Load teacher info
-            query = "SELECT teacher_code, first_name, last_name, salary_amount FROM teachers WHERE teacher_id = %s"
-            result = db.execute_query(query, (teacher_id,), fetch=True)
+            result = []
+            try:
+                query = """
+                    SELECT
+                        t.teacher_code,
+                        t.first_name,
+                        t.last_name,
+                        COALESCE(tsm.base_salary, t.salary_amount, 0) AS salary_amount,
+                        COALESCE(tsm.allowance_amount, t.allowance_amount, 0) AS allowance_amount,
+                        COALESCE(tsm.advances_amount, 0) AS total_advances,
+                        COALESCE(tsm.net_salary, (COALESCE(t.salary_amount, 0) + COALESCE(t.allowance_amount, 0))) AS net_salary,
+                        COALESCE(tsm.is_paid, 0) AS is_paid
+                    FROM teachers t
+                    LEFT JOIN teacher_salary_monthly tsm
+                      ON tsm.teacher_id = t.teacher_id
+                     AND tsm.payroll_month = %s
+                    WHERE t.teacher_id = %s
+                """
+                result = db.execute_query(query, (selected_month, teacher_id), fetch=True) or []
+            except Exception:
+                # Fallback when monthly snapshot table is unavailable.
+                start_date, end_exclusive = self._salary_month_bounds()
+                query = """
+                    SELECT teacher_code, first_name, last_name, salary_amount, allowance_amount
+                    FROM teachers
+                    WHERE teacher_id = %s
+                """
+                base_res = db.execute_query(query, (teacher_id,), fetch=True) or []
+                if base_res:
+                    t = base_res[0]
+                    adv_q = """
+                        SELECT COALESCE(SUM(advance_amount), 0) AS total
+                        FROM teacher_salary_advances
+                        WHERE teacher_id = %s
+                          AND status IN ('Approved', 'Deducted')
+                          AND advance_date >= %s
+                          AND advance_date < %s
+                    """
+                    adv_res = db.execute_query(adv_q, (teacher_id, start_date, end_exclusive), fetch=True) or []
+                    total_advances = float(adv_res[0].get('total') or 0) if adv_res else 0.0
+                    salary = float(t.get('salary_amount') or 0)
+                    allowance = float(t.get('allowance_amount') or 0)
+                    t['total_advances'] = total_advances
+                    t['net_salary'] = (salary + allowance) - total_advances
+                    t['is_paid'] = 0
+                    result = [t]
             
             if result:
                 teacher = result[0]
                 code = teacher.get('teacher_code', '')
                 name = f"{teacher.get('first_name', '')} {teacher.get('last_name', '')}"
                 salary = float(teacher.get('salary_amount', 0) or 0)
-                
-                # Load advances for this teacher
-                adv_query = "SELECT COALESCE(SUM(advance_amount), 0) as total FROM teacher_salary_advances WHERE teacher_id = %s AND status IN ('Approved', 'Deducted')"
-                adv_result = db.execute_query(adv_query, (teacher_id,), fetch=True)
-                total_advances = float(adv_result[0]['total']) if adv_result else 0.0
-                
-                net_salary = salary - total_advances
+                allowance = float(teacher.get('allowance_amount', 0) or 0)
+                total_advances = float(teacher.get('total_advances', 0) or 0)
+                net_salary = float(teacher.get('net_salary', 0) or 0)
                 
                 # Update info labels
                 self.staff_code_var.set(code)
                 self.staff_name_var.set(name)
                 self.staff_salary_var.set(format_currency(salary))
+                self.staff_allowance_var.set(format_currency(allowance))
                 self.staff_advances_var.set(format_currency(total_advances))
                 self.staff_net_var.set(format_currency(net_salary))
                 self.staff_salary_status_var.set("Active")
+                self.salary_paid_var.set(bool(int(teacher.get('is_paid') or 0)))
+
+                # Preload allowance form
+                try:
+                    self.allowance_amount_var.set(str(allowance))
+                except Exception:
+                    pass
                 
                 # Load advances list
                 self.load_advances_list(teacher_id)
@@ -2214,9 +2835,80 @@ class FinanceTab:
         self.staff_code_var.set("---")
         self.staff_name_var.set("---")
         self.staff_salary_var.set("---")
+        self.staff_allowance_var.set("---")
         self.staff_advances_var.set("---")
         self.staff_net_var.set("---")
         self.staff_salary_status_var.set("---")
+        self.salary_paid_var.set(False)
+        try:
+            self.allowance_amount_var.set("")
+        except Exception:
+            pass
+
+    def update_salary_paid_status(self):
+        """Set salary paid/unpaid for selected teacher in selected month."""
+        try:
+            sel = self.staff_teacher_var.get()
+            if not sel:
+                messagebox.showwarning("No Selection", "Please select a teacher")
+                return
+            teacher_id = int(sel.split(':')[0])
+            payroll_month = self._selected_salary_month()
+            is_paid = 1 if self.salary_paid_var.get() else 0
+
+            # Ensure monthly snapshot row exists before updating paid flag.
+            try:
+                from models.finance import FinancialManager
+                FinancialManager.generate_monthly_salary_snapshot(payroll_month)
+            except Exception:
+                pass
+
+            db.execute_query(
+                """
+                INSERT INTO teacher_salary_monthly (teacher_id, payroll_month, is_paid)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE is_paid = VALUES(is_paid)
+                """,
+                (teacher_id, payroll_month, is_paid)
+            )
+            messagebox.showinfo("Success", "Salary paid status updated")
+            self.on_staff_teacher_selected()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to update paid status: {e}")
+
+    def save_allowance(self):
+        """Save allowance amount for selected teacher"""
+        try:
+            sel = self.staff_teacher_var.get()
+            if not sel:
+                messagebox.showwarning("No Selection", "Please select a teacher")
+                return
+            try:
+                teacher_id = int(sel.split(':')[0])
+            except Exception:
+                messagebox.showwarning("Invalid Selection", "Please select a valid teacher")
+                return
+            try:
+                allowance = float(self.allowance_amount_var.get().strip() or 0.0)
+            except Exception:
+                messagebox.showwarning("Invalid Amount", "Please enter a valid allowance amount")
+                return
+            db.execute_query(
+                "UPDATE teachers SET allowance_amount = %s WHERE teacher_id = %s",
+                (allowance, teacher_id)
+            )
+            messagebox.showinfo("Success", "Allowance updated successfully")
+            self.on_staff_teacher_selected()
+            self.load_staff_salaries()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to update allowance: {str(e)}")
+
+    def clear_allowance_form(self):
+        """Clear allowance form"""
+        try:
+            self.allowance_amount_var.set("")
+        except Exception:
+            pass
     
     def load_advances_list(self, teacher_id):
         """Load advances list for selected teacher"""
@@ -2229,17 +2921,20 @@ class FinanceTab:
                 return
             
             status_filter = self.staff_status_var.get()
+            start_date, end_exclusive = self._salary_month_bounds()
             base_query = """
                 SELECT tsa.advance_id, t.first_name, t.last_name, tsa.advance_amount, tsa.advance_date, tsa.description, tsa.status
                 FROM teacher_salary_advances tsa
                 JOIN teachers t ON tsa.teacher_id = t.teacher_id
                 WHERE tsa.teacher_id = %s
+                  AND tsa.advance_date >= %s
+                  AND tsa.advance_date < %s
             """
             
-            params = (teacher_id,)
+            params = (teacher_id, start_date, end_exclusive)
             if status_filter != "All":
                 base_query += " AND tsa.status = %s"
-                params = (teacher_id, status_filter)
+                params = (teacher_id, start_date, end_exclusive, status_filter)
             
             results = db.execute_query(base_query, params, fetch=True)
             
@@ -2293,7 +2988,7 @@ class FinanceTab:
             
             messagebox.showinfo("Success", "Salary advance recorded successfully")
             self.clear_advance_form()
-            self.on_staff_teacher_selected()
+            self.load_staff_salaries()
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to record advance: {e}")
@@ -2353,7 +3048,7 @@ class FinanceTab:
                     db.execute_query(query, (amount, desc_var.get(), date_var.get(), status_var.get(), advance_id))
                     messagebox.showinfo("Success", "Advance updated successfully")
                     dialog.destroy()
-                    self.on_staff_teacher_selected()
+                    self.load_staff_salaries()
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to update: {e}")
             
@@ -2382,7 +3077,7 @@ class FinanceTab:
             query = "DELETE FROM teacher_salary_advances WHERE advance_id = %s"
             db.execute_query(query, (advance_id,))
             messagebox.showinfo("Success", "Advance deleted successfully")
-            self.on_staff_teacher_selected()
+            self.load_staff_salaries()
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to delete advance: {e}")

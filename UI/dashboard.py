@@ -302,14 +302,31 @@ class DashboardTab:
             # Get recent fee payments
             query = """
                 SELECT 
-                    sf.payment_date as time,
-                    CONCAT('Fee Payment - ', s.first_name, ' ', s.last_name) as activity,
-                    CONCAT(%s, sf.amount_paid, ' (', ft.fee_name, ')') as details,
-                    'System' as user
-                FROM student_fees sf
-                JOIN students s ON sf.student_id = s.student_id
-                JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id
-                ORDER BY sf.payment_date DESC, sf.created_at DESC
+                    activity_time as time,
+                    activity,
+                    details,
+                    user
+                FROM (
+                    SELECT 
+                        sf.payment_date as activity_time,
+                        CONCAT('Fee Payment - ', s.first_name, ' ', s.last_name) as activity,
+                        CONCAT(%s, sf.amount_paid, ' (', ft.fee_name, ')') as details,
+                        'System' as user
+                    FROM student_fees sf
+                    JOIN students s ON sf.student_id = s.student_id
+                    JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id
+
+                    UNION ALL
+
+                    SELECT
+                        DATE(COALESCE(tr.completed_at, tr.created_at)) as activity_time,
+                        CONCAT('Term Rollover - ', tr.from_term, ' to ', tr.to_term) as activity,
+                        CONCAT('Carry: ', tr.carry_students, ', Reset: ', tr.reset_students) as details,
+                        COALESCE(tr.executed_by, 'System') as user
+                    FROM term_rollover_runs tr
+                    WHERE tr.status = 'COMPLETED'
+                ) activities
+                ORDER BY activity_time DESC
                 LIMIT 10
             """
 

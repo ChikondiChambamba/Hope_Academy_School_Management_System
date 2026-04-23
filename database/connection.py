@@ -5,6 +5,7 @@ import mysql.connector
 from mysql.connector import Error, pooling
 import config
 from typing import Optional, Tuple, List, Dict, Any
+from contextlib import contextmanager
 
 class DatabaseConnection:
     _instance = None
@@ -25,8 +26,20 @@ class DatabaseConnection:
                 **config.DB_CONFIG
             )
             print("Database connection pool created successfully")
+            try:
+                config.Config._write_config_log(
+                    "Database connection pool created for "
+                    f"{config.Config.DB_CONFIG.get('user')}@{config.Config.DB_CONFIG.get('host')}/"
+                    f"{config.Config.DB_CONFIG.get('database')}"
+                )
+            except Exception:
+                pass
         except Error as e:
             print(f"Error creating connection pool: {e}")
+            try:
+                config.Config._write_config_log(f"Database connection pool initialization failed: {e}", level="ERROR")
+            except Exception:
+                pass
             raise
     
     def get_connection(self):
@@ -90,6 +103,50 @@ class DatabaseConnection:
                 cursor.close()
             if connection:
                 connection.close()
+
+    @contextmanager
+    def transaction(self):
+        """Provide a transactional connection scope for multi-step operations."""
+        connection = None
+        try:
+            connection = self.get_connection()
+            try:
+                connection.autocommit = False
+            except Exception:
+                pass
+            yield connection
+            connection.commit()
+        except Error as e:
+            if connection:
+                connection.rollback()
+            print(f"Transaction error: {e}")
+            raise
+        finally:
+            if connection:
+                try:
+                    connection.autocommit = True
+                except Exception:
+                    pass
+                connection.close()
+
+    def execute_query_in_transaction(
+        self,
+        connection,
+        query: str,
+        params: Tuple = None,
+        fetch: bool = False
+    ) -> Optional[List[Dict]]:
+        """Execute a query using an existing transactional connection."""
+        cursor = None
+        try:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(query, params or ())
+            if fetch:
+                return cursor.fetchall()
+            return cursor.lastrowid
+        finally:
+            if cursor:
+                cursor.close()
     
     def close_all(self):
         """Close all connections in pool"""

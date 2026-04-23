@@ -537,6 +537,7 @@ class TeacherDialog(BaseDialog):
             ("Email:", "email", "entry", 40),
             ("Hire Date*:", "hire_date", "entry", 15),
             ("Salary Amount:", "salary_amount", "entry", 20),
+            ("Allowance Amount:", "allowance_amount", "entry", 20),
             ("Status:", "is_active", "combobox", ["Active", "Inactive"], 10)
         ]
         
@@ -560,6 +561,7 @@ class TeacherDialog(BaseDialog):
         # Set default values
         self.widgets['hire_date'].insert(0, date.today().strftime('%Y-%m-%d'))
         self.widgets['salary_amount'].insert(0, "0.00")
+        self.widgets['allowance_amount'].insert(0, "0.00")
         # If editing an existing teacher, load their data into the form
         if self.teacher:
             try:
@@ -580,6 +582,10 @@ class TeacherDialog(BaseDialog):
                 salary = getattr(self.teacher, 'salary_amount', 0) or 0
                 self.widgets['salary_amount'].delete(0, tk.END)
                 self.widgets['salary_amount'].insert(0, str(salary))
+                # Allowance amount
+                allowance = getattr(self.teacher, 'allowance_amount', 0) or 0
+                self.widgets['allowance_amount'].delete(0, tk.END)
+                self.widgets['allowance_amount'].insert(0, str(allowance))
                 # Status combobox expects 'Active'/'Inactive'
                 try:
                     self.widgets['is_active'].set('Active' if getattr(self.teacher, 'is_active', True) else 'Inactive')
@@ -611,6 +617,7 @@ class TeacherDialog(BaseDialog):
                 'subject_specialization': self.widgets.get('specialization').get().strip(),
                 'hire_date': hire_date,
                 'salary_amount': float(self.widgets['salary_amount'].get().strip() or 0.0),
+                'allowance_amount': float(self.widgets['allowance_amount'].get().strip() or 0.0),
                 'is_active': self.widgets['is_active'].get() == 'Active'
             }
 
@@ -772,6 +779,9 @@ class FeeTypeDialog(BaseDialog):
                         except Exception:
                             pass
                     selected_names.append(name)
+            if not selected_ids and not selected_names:
+                messagebox.showerror('Validation', 'Select at least one class or enable "Apply to all classes".')
+                return
         self.result_data['apply_to_all'] = apply_all
         self.result_data['class_ids'] = selected_ids
         self.result_data['class_names'] = selected_names
@@ -857,8 +867,11 @@ class FeePaymentDialog(BaseDialog):
         ttk.Label(payment_frame, text="Fee Type*:").grid(row=0, column=0, sticky='e', padx=(0, 10), pady=5)
         self.fee_type_var = tk.StringVar()
         
-        # Get fee types
-        fee_types = FeeType.get_all()
+        # Get fee types applicable to student's class
+        fee_types = FeeType.get_applicable_for_class(
+            getattr(self.student, 'class_name', ''),
+            config.Config.CURRENT_ACADEMIC_YEAR
+        )
 
         # If student is continuing, registration and uniform should not be selectable
         filtered_fee_types = []
@@ -912,7 +925,7 @@ class FeePaymentDialog(BaseDialog):
         ttk.Label(payment_frame, text="Payment Method:").grid(row=3, column=0, sticky='e', padx=(0, 10), pady=5)
         self.method_var = tk.StringVar(value="Cash")
         method_combo = ttk.Combobox(payment_frame, textvariable=self.method_var, 
-                                   values=["Cash", "M-Pesa", "Bank Transfer", "Check", "Other"], width=15)
+                                   values=["Cash", "Mobile money", "Bank Transfer", "Check", "Other"], width=15)
         method_combo.grid(row=3, column=1, sticky='w', pady=5)
 
         # Receipt number
@@ -1039,13 +1052,9 @@ class FeePaymentDialog(BaseDialog):
             return
 
         try:
-            # Parse fee type
+            # Resolve selected fee type directly from current lookup
             fee_type_str = self.fee_type_var.get()
-            fee_name = fee_type_str.split(' (')[0]
-
-            # Get fee type ID
-            fee_types = FeeType.get_all()
-            fee_type = next((ft for ft in fee_types if ft.fee_name == fee_name), None)
+            fee_type = self._fee_type_lookup.get(fee_type_str)
 
             if not fee_type:
                 messagebox.showerror("Error", "Fee type not found")
@@ -1622,13 +1631,42 @@ class PreferencesDialog(BaseDialog):
     """Dialog for application preferences"""
     
     def __init__(self, parent):
-        super().__init__(parent, "Preferences", 400, 300)
+        super().__init__(parent, "Preferences", 760, 760)
         self.setup_ui()
     
     def setup_ui(self):
         """Setup preferences UI"""
+        container = ttk.Frame(self.main_frame)
+        container.pack(fill='both', expand=True)
+
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+
+        content_frame = ttk.Frame(canvas, padding=(0, 0, 12, 0))
+        canvas_window = canvas.create_window((0, 0), window=content_frame, anchor='nw')
+
+        def _update_scroll_region(event=None):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+
+        def _sync_canvas_width(event):
+            canvas.itemconfigure(canvas_window, width=event.width)
+
+        content_frame.bind('<Configure>', _update_scroll_region)
+        canvas.bind('<Configure>', _sync_canvas_width)
+
+        def _on_mousewheel(event):
+            if canvas.winfo_exists():
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+
+        canvas.bind_all('<MouseWheel>', _on_mousewheel)
+        self.dialog.bind('<Destroy>', lambda e: canvas.unbind_all('<MouseWheel>'))
+
         # Database settings
-        db_frame = ttk.LabelFrame(self.main_frame, text="Database Settings", padding="10")
+        db_frame = ttk.LabelFrame(content_frame, text="Database Settings", padding="10")
         db_frame.pack(fill='x', pady=(0, 10))
         
         ttk.Label(db_frame, text="Host:").grid(row=0, column=0, sticky='e', padx=(0, 10), pady=5)
@@ -1648,7 +1686,7 @@ class PreferencesDialog(BaseDialog):
         ttk.Entry(db_frame, textvariable=self.db_var, width=25).grid(row=3, column=1, sticky='w', pady=5)
         
         # UI settings
-        ui_frame = ttk.LabelFrame(self.main_frame, text="Interface Settings", padding="10")
+        ui_frame = ttk.LabelFrame(content_frame, text="Interface Settings", padding="10")
         ui_frame.pack(fill='x', pady=(0, 10))
         
         ttk.Label(ui_frame, text="Theme:").grid(row=0, column=0, sticky='e', padx=(0, 10), pady=5)
@@ -1656,79 +1694,318 @@ class PreferencesDialog(BaseDialog):
         ttk.Combobox(ui_frame, textvariable=self.theme_var, 
                     values=['clam', 'alt', 'default', 'classic'], width=20).grid(row=0, column=1, sticky='w', pady=5)
 
-        # Academic year settings
-        acad_frame = ttk.LabelFrame(self.main_frame, text="Academic Year", padding="10")
+        # Academic configuration
+        acad_frame = ttk.LabelFrame(content_frame, text="Academic Configuration", padding="10")
         acad_frame.pack(fill='x', pady=(0, 10))
 
         ttk.Label(acad_frame, text="Academic Year:").grid(row=0, column=0, sticky='e', padx=(0,10), pady=5)
         self.acad_var = tk.StringVar(value=getattr(config.Config, 'CURRENT_ACADEMIC_YEAR', ''))
         ttk.Entry(acad_frame, textvariable=self.acad_var, width=20).grid(row=0, column=1, sticky='w', pady=5)
 
-        ttk.Label(acad_frame, text="Term End Date (YYYY-MM-DD):").grid(row=1, column=0, sticky='e', padx=(0,10), pady=5)
-        self.term_end_var = tk.StringVar(value=getattr(config.Config, 'TERM_END_DATE', '') or '')
-        ttk.Entry(acad_frame, textvariable=self.term_end_var, width=20).grid(row=1, column=1, sticky='w', pady=5)
+        ttk.Label(acad_frame, text="Academic Year Start:").grid(row=1, column=0, sticky='e', padx=(0,10), pady=5)
+        self.acad_start_var = tk.StringVar(value=getattr(config.Config, 'ACADEMIC_YEAR_START_DATE', '') or '')
+        ttk.Entry(acad_frame, textvariable=self.acad_start_var, width=20).grid(row=1, column=1, sticky='w', pady=5)
 
-        ttk.Label(acad_frame, text="Term Start Date (YYYY-MM-DD):").grid(row=2, column=0, sticky='e', padx=(0,10), pady=5)
-        self.term_start_var = tk.StringVar(value=getattr(config.Config, 'TERM_START_DATE', '') or '')
-        ttk.Entry(acad_frame, textvariable=self.term_start_var, width=20).grid(row=2, column=1, sticky='w', pady=5)
+        ttk.Label(acad_frame, text="Academic Year End:").grid(row=1, column=2, sticky='e', padx=(10,10), pady=5)
+        self.acad_end_var = tk.StringVar(value=getattr(config.Config, 'ACADEMIC_YEAR_END_DATE', '') or '')
+        ttk.Entry(acad_frame, textvariable=self.acad_end_var, width=20).grid(row=1, column=3, sticky='w', pady=5)
 
-        ttk.Label(acad_frame, text="Current Term:").grid(row=3, column=0, sticky='e', padx=(0,10), pady=5)
+        ttk.Label(acad_frame, text="Current Active Term:").grid(row=2, column=0, sticky='e', padx=(0,10), pady=5)
         self.current_term_var = tk.StringVar(value=getattr(config.Config, 'CURRENT_TERM', '') or '')
-        ttk.Combobox(acad_frame, textvariable=self.current_term_var, values=getattr(config.Config, 'TERMS', ['Term 1','Term 2','Term 3']), width=18, state='readonly').grid(row=3, column=1, sticky='w', pady=5)
+        current_term_combo = ttk.Combobox(
+            acad_frame,
+            textvariable=self.current_term_var,
+            values=getattr(config.Config, 'TERMS', ['Term 1','Term 2','Term 3']),
+            width=18,
+            state='readonly'
+        )
+        current_term_combo.grid(row=2, column=1, sticky='w', pady=5)
+        current_term_combo.bind('<<ComboboxSelected>>', lambda e: self.refresh_term_preview())
+
+        ttk.Label(acad_frame, text="Current Term Start:").grid(row=2, column=2, sticky='e', padx=(10,10), pady=5)
+        self.term_start_var = tk.StringVar(value=getattr(config.Config, 'TERM_START_DATE', '') or '')
+        ttk.Entry(acad_frame, textvariable=self.term_start_var, width=20).grid(row=2, column=3, sticky='w', pady=5)
+
+        ttk.Label(acad_frame, text="Current Term End:").grid(row=3, column=0, sticky='e', padx=(0,10), pady=5)
+        self.term_end_var = tk.StringVar(value=getattr(config.Config, 'TERM_END_DATE', '') or '')
+        ttk.Entry(acad_frame, textvariable=self.term_end_var, width=20).grid(row=3, column=1, sticky='w', pady=5)
+
+        ttk.Label(acad_frame, text="Term Schedule:").grid(row=4, column=0, sticky='ne', padx=(0,10), pady=5)
+        schedule_frame = ttk.Frame(acad_frame)
+        schedule_frame.grid(row=4, column=1, columnspan=3, sticky='w', pady=5)
+        ttk.Label(schedule_frame, text="Term", width=12).grid(row=0, column=0, sticky='w')
+        ttk.Label(schedule_frame, text="Start Date", width=18).grid(row=0, column=1, sticky='w')
+        ttk.Label(schedule_frame, text="End Date", width=18).grid(row=0, column=2, sticky='w')
+        self.term_schedule_vars = {}
+        existing_schedule = getattr(config.Config, 'TERM_SCHEDULE', {}) or {}
+        for idx, term_name in enumerate(getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3']), start=1):
+            term_info = existing_schedule.get(term_name, {}) if isinstance(existing_schedule, dict) else {}
+            start_var = tk.StringVar(value=term_info.get('start_date') or '')
+            end_var = tk.StringVar(value=term_info.get('end_date') or '')
+            self.term_schedule_vars[term_name] = {'start_var': start_var, 'end_var': end_var}
+            ttk.Label(schedule_frame, text=term_name, width=12).grid(row=idx, column=0, sticky='w', pady=2)
+            ttk.Entry(schedule_frame, textvariable=start_var, width=18).grid(row=idx, column=1, sticky='w', padx=(0, 8), pady=2)
+            ttk.Entry(schedule_frame, textvariable=end_var, width=18).grid(row=idx, column=2, sticky='w', pady=2)
+
+        preview_frame = ttk.LabelFrame(content_frame, text="Term Transition Preview", padding="10")
+        preview_frame.pack(fill='x', pady=(0, 10))
+        self.preview_from_term_var = tk.StringVar(value=getattr(config.Config, 'CURRENT_TERM', '') or '')
+        self.preview_to_term_var = tk.StringVar(value=getattr(config.Config, 'CURRENT_TERM', '') or '')
+        self.preview_students_var = tk.StringVar(value='0')
+        self.preview_reset_var = tk.StringVar(value='0')
+        self.preview_carry_var = tk.StringVar(value='0')
+        self.preview_previous_total_var = tk.StringVar(value=format_currency(0))
+        self.preview_opening_total_var = tk.StringVar(value=format_currency(0))
+        self.preview_message_var = tk.StringVar(value='Changing the active term will show a preview here before confirmation.')
+
+        ttk.Label(preview_frame, text="From Term:").grid(row=0, column=0, sticky='e', padx=(0, 8), pady=4)
+        ttk.Label(preview_frame, textvariable=self.preview_from_term_var, font=('Arial', 10, 'bold')).grid(row=0, column=1, sticky='w', pady=4)
+        ttk.Label(preview_frame, text="To Term:").grid(row=0, column=2, sticky='e', padx=(16, 8), pady=4)
+        ttk.Label(preview_frame, textvariable=self.preview_to_term_var, font=('Arial', 10, 'bold')).grid(row=0, column=3, sticky='w', pady=4)
+        ttk.Label(preview_frame, text="Students:").grid(row=1, column=0, sticky='e', padx=(0, 8), pady=4)
+        ttk.Label(preview_frame, textvariable=self.preview_students_var).grid(row=1, column=1, sticky='w', pady=4)
+        ttk.Label(preview_frame, text="Reset:").grid(row=1, column=2, sticky='e', padx=(16, 8), pady=4)
+        ttk.Label(preview_frame, textvariable=self.preview_reset_var).grid(row=1, column=3, sticky='w', pady=4)
+        ttk.Label(preview_frame, text="Carry Forward:").grid(row=2, column=0, sticky='e', padx=(0, 8), pady=4)
+        ttk.Label(preview_frame, textvariable=self.preview_carry_var).grid(row=2, column=1, sticky='w', pady=4)
+        ttk.Label(preview_frame, text="Prev Outstanding:").grid(row=2, column=2, sticky='e', padx=(16, 8), pady=4)
+        ttk.Label(preview_frame, textvariable=self.preview_previous_total_var).grid(row=2, column=3, sticky='w', pady=4)
+        ttk.Label(preview_frame, text="Opening Balance:").grid(row=3, column=0, sticky='e', padx=(0, 8), pady=4)
+        ttk.Label(preview_frame, textvariable=self.preview_opening_total_var).grid(row=3, column=1, sticky='w', pady=4)
+        ttk.Label(preview_frame, textvariable=self.preview_message_var, wraplength=620, justify='left').grid(row=4, column=0, columnspan=4, sticky='w', pady=(8, 0))
+
+        # Previous period (read-only)
+        prev_frame = ttk.LabelFrame(content_frame, text="Previous Period", padding="10")
+        prev_frame.pack(fill='x', pady=(0, 10))
+
+        ttk.Label(prev_frame, text="Previous Academic Year:").grid(row=0, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.prev_acad_var = tk.StringVar(value=getattr(config.Config, 'PREVIOUS_ACADEMIC_YEAR', '') or '')
+        ttk.Entry(prev_frame, textvariable=self.prev_acad_var, width=20, state='readonly').grid(row=0, column=1, sticky='w', pady=5)
+
+        ttk.Label(prev_frame, text="Previous Term:").grid(row=1, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.prev_term_var = tk.StringVar(value=getattr(config.Config, 'PREVIOUS_TERM', '') or '')
+        ttk.Entry(prev_frame, textvariable=self.prev_term_var, width=20, state='readonly').grid(row=1, column=1, sticky='w', pady=5)
         
         # Create button box
         self.create_button_box(self.main_frame)
+        self.refresh_term_preview()
+
+    def _sync_current_term_dates(self):
+        """Sync current term date fields from the term schedule table."""
+        term_name = (self.current_term_var.get() or '').strip()
+        if not term_name:
+            return
+        term_vars = self.term_schedule_vars.get(term_name) or {}
+        self.term_start_var.set(term_vars.get('start_var').get() if term_vars.get('start_var') else '')
+        self.term_end_var.set(term_vars.get('end_var').get() if term_vars.get('end_var') else '')
+
+    def _validate_date_string(self, value: str, label: str):
+        """Validate optional YYYY-MM-DD date strings."""
+        value = (value or '').strip()
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, '%Y-%m-%d').date()
+        except ValueError:
+            raise ValueError(f"{label} must be in YYYY-MM-DD format.")
+
+    def _collect_term_schedule(self):
+        """Collect term schedule values from the UI."""
+        schedule = {}
+        for term_name, vars_map in self.term_schedule_vars.items():
+            schedule[term_name] = {
+                'start_date': (vars_map['start_var'].get() or '').strip() or None,
+                'end_date': (vars_map['end_var'].get() or '').strip() or None
+            }
+        selected_term = (self.current_term_var.get() or '').strip()
+        if selected_term and selected_term in schedule:
+            current_start = (self.term_start_var.get() or '').strip() or None
+            current_end = (self.term_end_var.get() or '').strip() or None
+            if current_start:
+                schedule[selected_term]['start_date'] = current_start
+            if current_end:
+                schedule[selected_term]['end_date'] = current_end
+        return schedule
+
+    def _validate_academic_configuration(self):
+        """Validate academic year and term date settings."""
+        year_start = self._validate_date_string(self.acad_start_var.get(), "Academic Year Start")
+        year_end = self._validate_date_string(self.acad_end_var.get(), "Academic Year End")
+        if year_start and year_end and year_start > year_end:
+            raise ValueError("Academic Year Start must be on or before Academic Year End.")
+
+        schedule = self._collect_term_schedule()
+        ordered_ranges = []
+        for term_name in getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3']):
+            info = schedule.get(term_name, {})
+            start_date = self._validate_date_string(info.get('start_date'), f"{term_name} Start Date")
+            end_date = self._validate_date_string(info.get('end_date'), f"{term_name} End Date")
+            if start_date and end_date and start_date > end_date:
+                raise ValueError(f"{term_name} Start Date must be on or before {term_name} End Date.")
+            if start_date and year_start and start_date < year_start:
+                raise ValueError(f"{term_name} Start Date cannot be before the Academic Year Start.")
+            if end_date and year_end and end_date > year_end:
+                raise ValueError(f"{term_name} End Date cannot be after the Academic Year End.")
+            if start_date and end_date:
+                ordered_ranges.append((term_name, start_date, end_date))
+
+        ordered_ranges.sort(key=lambda item: item[1])
+        for idx in range(1, len(ordered_ranges)):
+            prev_term, _, prev_end = ordered_ranges[idx - 1]
+            term_name, start_date, _ = ordered_ranges[idx]
+            if start_date < prev_end:
+                raise ValueError(f"{term_name} starts before {prev_term} ends.")
+        return schedule
+
+    def refresh_term_preview(self):
+        """Refresh the preview summary for the selected active term."""
+        self._sync_current_term_dates()
+        previous_term = getattr(config.Config, 'CURRENT_TERM', None)
+        selected_term = (self.current_term_var.get() or '').strip() or previous_term
+        self.preview_from_term_var.set(previous_term or '')
+        self.preview_to_term_var.set(selected_term or '')
+        self.preview_students_var.set('0')
+        self.preview_reset_var.set('0')
+        self.preview_carry_var.set('0')
+        self.preview_previous_total_var.set(format_currency(0))
+        self.preview_opening_total_var.set(format_currency(0))
+
+        if not previous_term:
+            self.preview_message_var.set("Set the initial active term here. Rollover preview becomes available after the first term is established.")
+            self._pending_rollover_preview = None
+            return
+
+        if not selected_term or selected_term == previous_term:
+            self.preview_message_var.set("No term change pending. Updating dates here will not affect balances until the active term changes.")
+            self._pending_rollover_preview = None
+            return
+
+        try:
+            from models.finance import FinancialManager
+            preview = FinancialManager.get_term_rollover_preview(
+                academic_year=(self.acad_var.get().strip() or config.Config.CURRENT_ACADEMIC_YEAR),
+                from_term=previous_term,
+                to_term=selected_term
+            )
+            summary = preview.get('summary') or {}
+            warnings = preview.get('warnings') or []
+            self.preview_students_var.set(str(summary.get('total_students', 0)))
+            self.preview_reset_var.set(str(summary.get('reset_students', 0)))
+            self.preview_carry_var.set(str(summary.get('carry_students', 0)))
+            self.preview_previous_total_var.set(format_currency(float(summary.get('previous_outstanding_total', 0) or 0)))
+            self.preview_opening_total_var.set(format_currency(float(summary.get('opening_balance_total', 0) or 0)))
+            preview_message = (
+                f"Preview ready. {summary.get('carry_students', 0)} students will carry balances forward and {summary.get('reset_students', 0)} will reset."
+            )
+            if warnings:
+                preview_message = f"{preview_message}\n\nWarning: {' '.join(warnings)}"
+            self.preview_message_var.set(preview_message)
+            self._pending_rollover_preview = preview
+        except Exception as e:
+            self.preview_message_var.set(f"Preview unavailable: {e}")
+            self._pending_rollover_preview = None
     
     def on_ok(self):
         """Save preferences"""
+        previous_acad = getattr(config.Config, 'CURRENT_ACADEMIC_YEAR', None)
         previous_term = getattr(config.Config, 'CURRENT_TERM', None)
-        # Update config
-        config.Config.DB_CONFIG['host'] = self.host_var.get()
-        config.Config.DB_CONFIG['user'] = self.user_var.get()
-        config.Config.DB_CONFIG['password'] = self.pass_var.get()
-        config.Config.DB_CONFIG['database'] = self.db_var.get()
-        config.Config.UI['theme'] = self.theme_var.get()
-        # Academic year and term
-        new_acad = self.acad_var.get().strip()
-        if new_acad:
-            config.Config.CURRENT_ACADEMIC_YEAR = new_acad
-        term_end = self.term_end_var.get().strip()
-        config.Config.TERM_END_DATE = term_end if term_end else None
-        # Term start and current term
-        term_start = self.term_start_var.get().strip()
-        config.Config.TERM_START_DATE = term_start if term_start else None
-        current_term = self.current_term_var.get().strip()
-        if current_term and current_term != previous_term:
-            try:
-                from models.finance import FinancialManager
-                if not FinancialManager.start_new_term(current_term, term_start_date=(term_start if term_start else None)):
-                    messagebox.showerror("Error", "Failed to start new term and compute fee rollover balances.")
-                    return
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to start new term: {str(e)}")
-                return
-        elif current_term:
-            config.Config.CURRENT_TERM = current_term
-        # Persist user settings
         try:
-            config.Config.save_user_settings()
-        except Exception:
-            pass
+            schedule = self._validate_academic_configuration()
+            new_acad = self.acad_var.get().strip() or previous_acad
+            current_term = (self.current_term_var.get() or '').strip() or previous_term
+            if not current_term:
+                raise ValueError("Select the current active term.")
 
-        # Notify application that preferences changed (apply immediately)
-        try:
-            root = self.dialog.winfo_toplevel()
-            root.event_generate('<<PreferencesChanged>>')
-        except Exception:
-            pass
-        
-        # Save to file (would need implementation)
-        # self.save_config_to_file()
-        
-        messagebox.showinfo("Success", "Preferences saved. Restart application for changes to take effect.")
-        
-        self.result = True
-        self.dialog.destroy()
+            term_start = (schedule.get(current_term, {}).get('start_date') or (self.term_start_var.get().strip() or None))
+            term_end = (schedule.get(current_term, {}).get('end_date') or (self.term_end_var.get().strip() or None))
+
+            rollover_result = None
+            if previous_term and current_term != previous_term:
+                from models.finance import FinancialManager
+
+                preview = getattr(self, '_pending_rollover_preview', None)
+                if not preview or preview.get('to_term') != current_term or preview.get('from_term') != previous_term:
+                    preview = FinancialManager.get_term_rollover_preview(
+                        academic_year=new_acad,
+                        from_term=previous_term,
+                        to_term=current_term
+                    )
+                summary = preview.get('summary') or {}
+                carry_students = int(summary.get('carry_students', 0) or 0)
+                reset_students = int(summary.get('reset_students', 0) or 0)
+                warning_line = (
+                    "\n\nWarning: Some students still have unpaid balances that will be carried forward."
+                    if carry_students > 0 else ""
+                )
+                confirmed = messagebox.askyesno(
+                    "Confirm Term Change",
+                    f"Change the active term from {previous_term} to {current_term}?\n\n"
+                    f"Students reviewed: {summary.get('total_students', 0)}\n"
+                    f"Balances resetting: {reset_students}\n"
+                    f"Balances carried forward: {carry_students}\n"
+                    f"Previous outstanding total: {format_currency(float(summary.get('previous_outstanding_total', 0) or 0))}\n"
+                    f"Opening balance total: {format_currency(float(summary.get('opening_balance_total', 0) or 0))}"
+                    f"{warning_line}\n\n"
+                    f"This will preserve historical records and apply the centralized rollover workflow."
+                )
+                if not confirmed:
+                    return
+
+                rollover_result = FinancialManager.execute_term_rollover(
+                    academic_year=new_acad,
+                    from_term=previous_term,
+                    to_term=current_term,
+                    term_start_date=term_start
+                )
+
+            config.Config.DB_CONFIG['host'] = self.host_var.get()
+            config.Config.DB_CONFIG['user'] = self.user_var.get()
+            config.Config.DB_CONFIG['password'] = self.pass_var.get()
+            config.Config.DB_CONFIG['database'] = self.db_var.get()
+            config.Config.UI['theme'] = self.theme_var.get()
+
+            if new_acad:
+                if previous_acad and new_acad != previous_acad:
+                    config.Config.PREVIOUS_ACADEMIC_YEAR = previous_acad
+                config.Config.CURRENT_ACADEMIC_YEAR = new_acad
+            config.Config.TERM_SCHEDULE = schedule
+            config.Config.TERM_START_DATE = term_start
+            config.Config.TERM_END_DATE = term_end
+            config.Config.CURRENT_TERM = current_term
+            if previous_term and current_term != previous_term:
+                config.Config.PREVIOUS_TERM = previous_term
+
+            config.Config.save_user_settings()
+
+            try:
+                root = self.dialog.winfo_toplevel()
+                root.event_generate('<<PreferencesChanged>>')
+            except Exception:
+                pass
+
+            if rollover_result:
+                summary = rollover_result.get('summary') or {}
+                cloned_fee_types = int(rollover_result.get('cloned_fee_types', 0) or 0)
+                messagebox.showinfo(
+                    "Term Updated",
+                    f"Current term changed to {current_term}.\n\n"
+                    f"Balances carried forward: {summary.get('carry_students', 0)}\n"
+                    f"Balances reset: {summary.get('reset_students', 0)}\n"
+                    f"Opening balance total: {format_currency(float(summary.get('opening_balance_total', 0) or 0))}"
+                    + (f"\nFee types copied from the previous term: {cloned_fee_types}" if cloned_fee_types > 0 else "")
+                )
+            else:
+                messagebox.showinfo("Success", "Preferences saved successfully.")
+
+            self.result = True
+            self.dialog.destroy()
+        except ValueError as e:
+            messagebox.showerror("Validation Error", str(e))
+        except Exception as e:
+            messagebox.showerror(
+                "Save Failed",
+                f"Preferences could not be saved safely.\n\nNo term change was committed.\n\nDetails: {e}"
+            )
 
 
 class ChangePasswordDialog(BaseDialog):
