@@ -210,27 +210,28 @@ class FinanceTab:
         filter_frame = ttk.Frame(right_frame)
         filter_frame.pack(fill='x', pady=(5, 10))
 
-        ttk.Label(filter_frame, text='Filter by Fee Type:').pack(side='left', padx=(0,5))
+        # Laid out as a small grid: one long row squeezed the controls on small screens.
+        ttk.Label(filter_frame, text='Filter by Fee Type:').grid(row=0, column=0, sticky='w', padx=(0, 5), pady=2)
         self.filter_fee_var = tk.StringVar()
         self.filter_fee_combo = ttk.Combobox(filter_frame, textvariable=self.filter_fee_var, width=30)
-        self.filter_fee_combo.pack(side='left', padx=(0,5))
+        self.filter_fee_combo.grid(row=0, column=1, sticky='w', pady=2)
 
-        ttk.Label(filter_frame, text='Filter by Student:').pack(side='left', padx=(10,5))
+        ttk.Label(filter_frame, text='Filter by Student:').grid(row=1, column=0, sticky='w', padx=(0, 5), pady=2)
         self.filter_student_var = tk.StringVar()
         self.filter_student_combo = ttk.Combobox(filter_frame, textvariable=self.filter_student_var, width=30)
-        self.filter_student_combo.pack(side='left', padx=(0,5))
+        self.filter_student_combo.grid(row=1, column=1, sticky='w', pady=2)
 
-        ttk.Label(filter_frame, text='Show:').pack(side='left', padx=(10,5))
+        actions = ttk.Frame(filter_frame)
+        actions.grid(row=2, column=0, columnspan=2, sticky='w', pady=(4, 0))
         self.show_all_payments_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            filter_frame,
-            text='All payments',
+            actions,
+            text='Show all payments',
             variable=self.show_all_payments_var,
             command=self.load_recent_payments
-        ).pack(side='left', padx=(0,5))
-
-        ttk.Button(filter_frame, text='Search', command=self.search_payments).pack(side='left', padx=4)
-        ttk.Button(filter_frame, text='Clear', command=lambda: (self.filter_fee_var.set(''), self.filter_student_var.set(''), self.load_recent_payments())).pack(side='left')
+        ).pack(side='left', padx=(0, 10))
+        ttk.Button(actions, text='Search', command=self.search_payments).pack(side='left', padx=(0, 4))
+        ttk.Button(actions, text='Clear', command=lambda: (self.filter_fee_var.set(''), self.filter_student_var.set(''), self.load_recent_payments())).pack(side='left')
     
     def setup_student_balances_tab(self):
         """Setup student balances tab"""

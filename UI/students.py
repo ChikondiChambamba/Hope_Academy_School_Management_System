@@ -32,18 +32,15 @@ class StudentsTab:
         )
         title_label.pack(anchor='w', pady=(0, 10))
         
-        # Control buttons frame (top)
+        # Controls are stacked in three rows (classes / actions / search) so they
+        # fit on small screens; a single row pushed the search box off-screen.
         controls_frame = ttk.Frame(main_container)
         controls_frame.pack(fill='x', pady=(0, 10))
 
-        # Left side: class list + action buttons
-        left_frame = ttk.Frame(controls_frame)
-        left_frame.pack(side='left')
-
-        # Class horizontal button bar for quick selection (Reception -> Grade 7)
+        # Row 1: class buttons for quick selection (Reception -> Grade 7)
         self.default_classes = ['Reception', 'Nursery', 'Grade 1', 'Grade 2', 'Grade 3', 'Grade 4', 'Grade 5', 'Grade 6', 'Grade 7']
-        class_frame = ttk.Frame(left_frame)
-        class_frame.pack(side='left', padx=(0,10), fill='x')
+        class_frame = ttk.Frame(controls_frame)
+        class_frame.pack(fill='x', anchor='w')
         ttk.Label(class_frame, text='Classes:').pack(anchor='w')
         # Horizontal buttons
         self.class_buttons = {}
@@ -62,10 +59,14 @@ class StudentsTab:
             except Exception:
                 b.default_fg = None
             self.class_buttons[cls] = b
-        # Delete class button
-        del_btn = ttk.Button(class_frame, text='Delete Class', command=self.delete_class, style='Danger.TButton')
-        del_btn.pack(side='left', padx=6)
-        
+        # Delete class button, at the end of the class row
+        del_btn = ttk.Button(btn_row, text='Delete Class', command=self.delete_class, style='Danger.TButton')
+        del_btn.pack(side='left', padx=(12, 0))
+
+        # Row 2: student actions
+        left_frame = ttk.Frame(controls_frame)
+        left_frame.pack(fill='x', anchor='w', pady=(8, 0))
+
         self.add_button = ttk.Button(
             left_frame, 
             text="Add Student",
@@ -117,9 +118,9 @@ class StudentsTab:
             btn.state(['disabled'])
         # fee_button already handled above (may be disabled for Headteacher)
         
-        # Right side search
+        # Row 3: filter and search (left-aligned so it is always visible)
         right_frame = ttk.Frame(controls_frame)
-        right_frame.pack(side='right')
+        right_frame.pack(fill='x', anchor='w', pady=(8, 0))
         
         # Filter by class (kept for search convenience)
         ttk.Label(right_frame, text="Class:").pack(side='left', padx=(0, 5))
@@ -150,30 +151,8 @@ class StudentsTab:
         self.search_entry = ttk.Entry(right_frame, textvariable=self.search_var, width=25)
         self.search_entry.pack(side='left', padx=(0, 5))
         
-        search_button = ttk.Button(
-            right_frame,
-            text="Go",
-            command=self.search_students,
-            width=5
-        )
-        # Stack the Go and Refresh buttons vertically so they don't stretch sideways
-        buttons_frame = ttk.Frame(right_frame, width=60)
-        buttons_frame.pack(side='left', padx=(0, 5))
-        # Prevent the frame from expanding to fill available horizontal space
-        try:
-            buttons_frame.pack_propagate(False)
-        except Exception:
-            pass
-
-        search_button.pack(in_=buttons_frame, side='top', pady=(0, 4))
-
-        refresh_button = ttk.Button(
-            buttons_frame,
-            text="Refresh",
-            command=self.load_students,
-            width=8
-        )
-        refresh_button.pack(side='top')
+        ttk.Button(right_frame, text="Go", command=self.search_students, width=5).pack(side='left', padx=(0, 5))
+        ttk.Button(right_frame, text="Refresh", command=self.load_students, width=8).pack(side='left')
         
         # Bind Enter key to search
         self.search_entry.bind('<Return>', lambda e: self.search_students())
