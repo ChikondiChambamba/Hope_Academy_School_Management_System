@@ -1,2 +1,10 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Never line-ending-convert binary formats (ReportLab PDFs look like ASCII text).
+*.pdf binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.db binary
+*.exe binary
