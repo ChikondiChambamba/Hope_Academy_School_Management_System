@@ -104,7 +104,7 @@ class PreviewTestCase(unittest.TestCase):
                                                              for s in source]
         calls = []
 
-        def fee_rows(year, term, treat_new_students_as_continuing=False):
+        def fee_rows(year, term, treat_new_students_as_continuing=False, promote_classes=False):
             calls.append((year, term))
             return list(source) if (year, term) == years[:2] else list(next_rows)
 
@@ -123,7 +123,7 @@ class PreviewTestCase(unittest.TestCase):
         self.assertIn(("2026-2027", "Term 1"), calls)
         prior_mock.assert_called_once_with("2025-2026", "Term 3")
         proj.assert_called_once_with("2025-2026", "Term 3", "2026-2027", "Term 1",
-                                     treat_new_students_as_continuing=True)
+                                     treat_new_students_as_continuing=True, promote_classes=True)
         self.assertEqual(preview["to_academic_year"], "2026-2027")
 
     def test_unpaid_required_fee_is_carried(self):
