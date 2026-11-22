@@ -132,7 +132,7 @@ class MainWindow:
         file_menu.add_separator()
         file_menu.add_command(label="Export Data", 
                              command=self.export_data)
-        file_menu.add_command(label="Import Data", 
+        file_menu.add_command(label="Import Students from Excel...", 
                              command=self.import_data)
         file_menu.add_separator()
         file_menu.add_command(label="Print", 
@@ -556,12 +556,11 @@ class MainWindow:
             messagebox.showerror("Export Failed", "The data could not be exported. See the log file for details.")
 
     def import_data(self):
-        """Bulk import (not available yet)."""
-        if not self._require('settings'):
+        """Import students from an Excel sheet (preview first, then import)."""
+        if not self._require('students'):
             return
-        from utils.export_import import import_from_excel
-        _, message = import_from_excel(None)
-        messagebox.showinfo("Import", message)
+        from UI.student_import_dialog import StudentImportDialog
+        StudentImportDialog(self.root, on_imported=self.refresh_all)
 
     def print_data(self):
         """Direct printing is not implemented; point users to the PDF reports."""

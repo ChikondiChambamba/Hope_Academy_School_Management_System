@@ -98,6 +98,13 @@ class StudentsTab:
         )
         self.fee_button.pack(side='left', padx=5)
 
+        # Bulk import is available whatever class is selected.
+        ttk.Button(
+            left_frame,
+            text="Import from Excel",
+            command=self.import_students,
+        ).pack(side='left', padx=5)
+
         # Roles without student-finance access cannot record fees
         if not show_finance:
             try:
@@ -839,6 +846,11 @@ class StudentsTab:
         self.delete_button.state(['!disabled'] if selected else ['disabled'])
         self.fee_button.state(['!disabled'] if selected else ['disabled'])
     
+    def import_students(self):
+        """Open the Excel import window; refresh the lists once students are added."""
+        from UI.student_import_dialog import StudentImportDialog
+        StudentImportDialog(self.frame.winfo_toplevel(), on_imported=self.refresh_data)
+
     def refresh_data(self):
         """Public method to refresh data (called from main window)"""
         self.load_students()

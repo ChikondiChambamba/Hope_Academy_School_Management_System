@@ -23,6 +23,25 @@ The first time it opens, a Welcome window asks two questions:
 Press Start. The Welcome window is not shown again.
 
 
+Importing students from Excel
+-----------------------------
+Students tab > Import from Excel (or File > Import Students from Excel).
+
+1. Press "Save an empty template..." the first time, or use an existing list. The columns are:
+   student_code, student_name, class, birth_date, parent_name, parent_phone, enrollment_date, status.
+   A Student List exported from the Reports tab can be imported as it is.
+2. Press "Choose Excel file..." and pick the workbook (.xlsx) or a .csv file.
+3. Check the list. Every row says what will happen:
+   - New: will be added. Leave student_code empty and a code is created.
+   - Update / Skip: the student is already in the program (same code, or same name and class).
+     Tick "Update students that already exist" to overwrite their details from the sheet.
+   - Problem (red): will not be imported; the reason is shown, e.g. a missing surname or a wrong date.
+4. Press Import. Fix any red rows in Excel and import the file again; students already added are skipped.
+
+Dates may be typed as 2018-03-14 or 14/03/2018 (day first). Phone numbers that lost their leading 0 in
+Excel are corrected. Status is Active or Inactive (empty means Active).
+
+
 Logging in and out
 ------------------
 - If a login was created, the program asks for it when it opens (File > Login, Ctrl+I).

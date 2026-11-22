@@ -157,17 +157,12 @@ def export_all_data(output_dir: str = None) -> Optional[Path]:
         return None
 
 
-def import_from_excel(file_path: str) -> Tuple[bool, str]:
-    """Bulk import is not implemented yet."""
-    return False, ("Importing from Excel is not available yet.\n"
-                   "Add records through the Students, Teachers, Finance and Inventory tabs.")
-
+# Importing students from Excel lives in utils/student_import.py.
 
 __all__ = [
     'backup_database',
     'restore_database',
     'run_automatic_backup',
     'export_all_data',
-    'import_from_excel',
     'backup_extension',
 ]

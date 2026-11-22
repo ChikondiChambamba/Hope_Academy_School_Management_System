@@ -145,15 +145,17 @@ class Student:
                 # Generate student code if not provided
                 if not student_data['student_code']:
                     student_data['student_code'] = self.generate_student_code()
-                # Prevent duplicate active student (same first/last name in same class)
-                try:
-                    dup_query = "SELECT COUNT(*) as cnt FROM students WHERE LOWER(first_name)=LOWER(%s) AND LOWER(last_name)=LOWER(%s) AND class=%s AND is_active = 1"
-                    dup_res = db.execute_query(dup_query, (student_data['first_name'], student_data['last_name'], student_data['class_name']), fetch=True)
-                    if dup_res and dup_res[0].get('cnt', 0) > 0:
-                        return False, "A student with the same name already exists in this class"
-                except Exception:
-                    # On error, continue to attempt insert (do not block due to dup check failure)
-                    pass
+                # Prevent two *active* students with the same name in the same class.
+                # Inactive records (e.g. an old entry kept for its payment history) are allowed.
+                if self.is_active:
+                    try:
+                        dup_query = "SELECT COUNT(*) as cnt FROM students WHERE LOWER(first_name)=LOWER(%s) AND LOWER(last_name)=LOWER(%s) AND class=%s AND is_active = 1"
+                        dup_res = db.execute_query(dup_query, (student_data['first_name'], student_data['last_name'], student_data['class_name']), fetch=True)
+                        if dup_res and dup_res[0].get('cnt', 0) > 0:
+                            return False, "A student with the same name already exists in this class"
+                    except Exception:
+                        # On error, continue to attempt insert (do not block due to dup check failure)
+                        pass
 
                 query = """
                     INSERT INTO students 
