@@ -68,7 +68,7 @@ class TeachersTab:
         # Show inactive checkbox
         self.show_inactive_var = tk.IntVar(value=0)
         self.show_inactive_cb = ttk.Checkbutton(
-            right_frame if 'right_frame' in locals() else controls_frame,
+            controls_frame,
             text='Show Inactive',
             variable=self.show_inactive_var,
             command=self.load_teachers

@@ -6,6 +6,7 @@ from datetime import date, datetime
 from typing import Optional, List, Dict, Any
 import config
 from database.connection import db
+from database.queries import Queries
 
 @dataclass
 class InventoryItem:
@@ -208,8 +209,9 @@ class InventoryItem:
     
     @classmethod
     def from_dict(cls, data: Dict) -> 'InventoryItem':
-        """Create InventoryItem instance from dictionary"""
-        return cls(**data)
+        """Create InventoryItem instance from a query row (extra joined columns are ignored)."""
+        from .row_mapping import from_row
+        return from_row(cls, data)
     
     @classmethod
     def get_all(cls) -> List['InventoryItem']:
@@ -305,19 +307,15 @@ class InventoryManager:
             if not item:
                 return False, "Item not found"
             
+            if quantity <= 0:
+                return False, "Quantity must be greater than 0"
+
             # Check stock availability
             if item.quantity < quantity:
                 return False, f"Insufficient stock. Available: {item.quantity}"
-            
-            # Record expense for the usage
-            expense = Expense(
-                description=f"Inventory usage: {item.item_name} - {description}",
-                amount=0,  # Could calculate cost here
-                category="Inventory Usage",
-                item_id=item_id
-            )
-            expense.save()
-            
+
+            # Consuming stock is not a cash expense: the purchase was already
+            # recorded when the item was bought/restocked.
             return item.update_quantity(-quantity)
         except Exception as e:
             return False, f"Error: {str(e)}"

@@ -187,7 +187,7 @@ def generate_attendance_summary_report(filename, start_date=None, end_date=None,
             SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) as absent_count,
             SUM(CASE WHEN a.status = 'Late' THEN 1 ELSE 0 END) as late_count,
             SUM(CASE WHEN a.status = 'Excused' THEN 1 ELSE 0 END) as excused_count,
-            ROUND((SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) as attendance_rate
+            ROUND(SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as attendance_rate
         FROM attendance a
         JOIN students s ON a.student_id = s.student_id
         WHERE a.attendance_date BETWEEN %s AND %s

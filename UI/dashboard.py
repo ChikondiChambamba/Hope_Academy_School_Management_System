@@ -4,6 +4,23 @@ from datetime import datetime, date, timedelta
 import config
 from database.connection import db
 
+# Emoji on the statistics cards. Tk spends ~0.7 s locating an emoji font the
+# first time one is drawn in a session; warm_up_icon_font() pays that early.
+STAT_ICONS = ('👨‍🎓', '👨‍🏫', '📊', '💰', '📦', '📋')
+
+
+def warm_up_icon_font(root) -> None:
+    """Draw the dashboard icons once, invisibly, so the dashboard opens without that delay."""
+    try:
+        probe = tk.Toplevel(root)
+        probe.withdraw()
+        ttk.Label(probe, text=''.join(STAT_ICONS), font=('Arial', 20)).pack()
+        probe.update_idletasks()
+        probe.destroy()
+    except tk.TclError:
+        pass
+
+
 class DashboardTab:
     def __init__(self, parent, role: str = 'Administrator'):
         self.parent = parent
@@ -461,10 +478,13 @@ class DashboardTab:
 
     def select_tab_by_name(self, name: str) -> bool:
         """Select a notebook tab by its displayed text. Returns True if selected."""
+        notebook = self.parent
+        while notebook is not None and not isinstance(notebook, ttk.Notebook):
+            notebook = notebook.master       # tabs are built inside a page of the notebook
         try:
-            for tab_id in self.parent.tabs():
-                if self.parent.tab(tab_id, 'text') == name:
-                    self.parent.select(tab_id)
+            for tab_id in notebook.tabs():
+                if notebook.tab(tab_id, 'text') == name and notebook.tab(tab_id, 'state') != 'hidden':
+                    notebook.select(tab_id)
                     return True
         except Exception:
             pass

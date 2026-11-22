@@ -1,9 +1,14 @@
 -- School Management System Database Schema
 -- Version: 1.0.0
 
-DROP DATABASE IF EXISTS school_management;
-CREATE DATABASE IF NOT EXISTS school_management;
-USE school_management;
+--
+-- Run with:  python setup_database.py
+-- (creates the database named in config / HOPE_DB_NAME and executes this file).
+-- This script is NON-destructive: it never drops data. To wipe and rebuild a
+-- database deliberately, use scripts/reset_database.py, which backs up first.
+--
+-- Stored routines and triggers use DELIMITER blocks, so the file also runs
+-- unchanged in the mysql command-line client.
 
 -- Students Table
 CREATE TABLE students (
@@ -73,7 +78,7 @@ CREATE TABLE student_fees (
     fee_type_id INT NOT NULL,
     amount_paid DECIMAL(10,2) NOT NULL,
     payment_date DATE NOT NULL,
-    payment_method ENUM('Cash', 'Mobile money', 'Bank Transfer', 'Check', 'Other') DEFAULT 'Cash',
+    payment_method ENUM('Cash', 'Mobile money', 'M-Pesa', 'Bank Transfer', 'Check', 'Other') DEFAULT 'Cash',
     receipt_number VARCHAR(50) UNIQUE,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -113,7 +118,8 @@ CREATE TABLE student_fee_exemptions (
 -- Term changes history table
 CREATE TABLE term_changes (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    academic_year VARCHAR(32) NOT NULL,
+    academic_year VARCHAR(32) NOT NULL,            -- year of the term that was opened
+    previous_academic_year VARCHAR(32),            -- year of the term that was closed
     previous_term VARCHAR(32),
     term_name VARCHAR(32) NOT NULL,
     start_date DATE,
@@ -142,9 +148,10 @@ CREATE TABLE student_term_fee_rollovers (
 
 CREATE TABLE term_rollover_runs (
     run_id INT PRIMARY KEY AUTO_INCREMENT,
-    academic_year VARCHAR(32) NOT NULL,
+    academic_year VARCHAR(32) NOT NULL,            -- year of from_term
     from_term VARCHAR(32) NOT NULL,
     to_term VARCHAR(32) NOT NULL,
+    to_academic_year VARCHAR(32),                  -- year of to_term (next year after the last term)
     status VARCHAR(20) NOT NULL DEFAULT 'PREVIEW',
     total_students INT NOT NULL DEFAULT 0,
     reset_students INT NOT NULL DEFAULT 0,
@@ -257,7 +264,9 @@ CREATE TABLE expenses (
     description VARCHAR(200) NOT NULL,
     amount DECIMAL(10,2) NOT NULL,
     category VARCHAR(50),
-    payment_method ENUM('Cash', 'Mobile money', 'Bank Transfer', 'Check', 'Other') DEFAULT 'Cash',
+    academic_year VARCHAR(32),
+    term VARCHAR(32),
+    payment_method ENUM('Cash', 'Mobile money', 'M-Pesa', 'Bank Transfer', 'Check', 'Other') DEFAULT 'Cash',
     receipt_number VARCHAR(50),
     notes TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -265,6 +274,7 @@ CREATE TABLE expenses (
     FOREIGN KEY (item_id) REFERENCES inventory_items(item_id) ON DELETE SET NULL,
     
     INDEX idx_expense_date (expense_date),
+    INDEX idx_expenses_year_term (academic_year, term),
     INDEX idx_category (category),
     INDEX idx_receipt (receipt_number)
 );
@@ -336,23 +346,6 @@ CREATE TABLE fee_type_classes (
 
 -- Create Views for Common Queries
 
--- View for Student Fee Summary
-CREATE VIEW student_fee_summary AS
-SELECT 
-    s.student_id,
-    s.student_code,
-    CONCAT(s.first_name, ' ', s.last_name) AS student_name,
-    s.class,
-    ft.academic_year,
-    SUM(ft.amount) AS total_fees_due,
-    COALESCE(SUM(sf.amount_paid), 0) AS total_fees_paid,
-    SUM(ft.amount) - COALESCE(SUM(sf.amount_paid), 0) AS balance
-FROM students s
-CROSS JOIN fee_types ft
-LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-WHERE s.is_active = 1 AND ft.academic_year = '2024'
-GROUP BY s.student_id, s.student_code, s.first_name, s.last_name, s.class, ft.academic_year;
-
 -- View for Daily Attendance Summary
 CREATE VIEW daily_attendance_summary AS
 SELECT 
@@ -404,25 +397,8 @@ ORDER BY year DESC, month DESC;
 
 -- Create Stored Procedures
 
--- Procedure to calculate student balance
-CREATE PROCEDURE CalculateStudentBalance(IN student_id INT)
-BEGIN
-    SELECT 
-        s.student_id,
-        CONCAT(s.first_name, ' ', s.last_name) AS student_name,
-        s.class,
-        ft.academic_year,
-        SUM(ft.amount) AS total_fees_due,
-        COALESCE(SUM(sf.amount_paid), 0) AS total_fees_paid,
-        SUM(ft.amount) - COALESCE(SUM(sf.amount_paid), 0) AS balance
-    FROM students s
-    CROSS JOIN fee_types ft
-    LEFT JOIN student_fees sf ON s.student_id = sf.student_id AND ft.fee_type_id = sf.fee_type_id
-    WHERE s.student_id = student_id AND ft.academic_year = '2024'
-    GROUP BY s.student_id, s.first_name, s.last_name, s.class, ft.academic_year;
-END;
-
 -- Procedure to get monthly financial report
+DELIMITER $$
 CREATE PROCEDURE GetMonthlyFinancialReport(IN year INT, IN month INT)
 BEGIN
     -- Revenue
@@ -451,19 +427,15 @@ BEGIN
         -
         (SELECT COALESCE(SUM(amount), 0) FROM expenses 
          WHERE YEAR(expense_date) = year AND MONTH(expense_date) = month) AS amount;
-END;
+END$$
+DELIMITER ;
 
 -- Create Triggers
 
--- Trigger to update inventory total value
-CREATE TRIGGER update_inventory_value
-BEFORE UPDATE ON inventory_items
-FOR EACH ROW
-BEGIN
-    SET NEW.total_value = NEW.quantity * NEW.unit_price;
-END;
+-- inventory_items.total_value is a STORED generated column; it needs no trigger.
 
 -- Trigger to prevent duplicate receipt numbers
+DELIMITER $$
 CREATE TRIGGER prevent_duplicate_receipt
 BEFORE INSERT ON student_fees
 FOR EACH ROW
@@ -474,7 +446,8 @@ BEGIN
             SET MESSAGE_TEXT = 'Receipt number already exists';
         END IF;
     END IF;
-END;
+END$$
+DELIMITER ;
 
 -- Trigger to log student updates
 CREATE TABLE student_audit_log (
@@ -487,6 +460,7 @@ CREATE TABLE student_audit_log (
     new_data JSON
 );
 
+DELIMITER $$
 CREATE TRIGGER log_student_changes
 AFTER UPDATE ON students
 FOR EACH ROW
@@ -512,37 +486,33 @@ BEGIN
             'is_active', NEW.is_active
         )
     );
-END;
+END$$
+DELIMITER ;
 
--- Insert Sample Data (Optional - remove in production)
-INSERT INTO students (student_code, first_name, last_name, class, birth_date, parent_name, parent_phone, address, enrollment_date) VALUES
+-- Expense categories (also ensured at runtime by models/expense_category.py)
+CREATE TABLE IF NOT EXISTS expense_categories (
+    category_id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-INSERT INTO teachers (teacher_code, first_name, last_name, phone, email, subject_specialization, hire_date) VALUES
-
-
-INSERT INTO inventory_items (item_code, item_name, category, quantity, unit_price, min_quantity, supplier) VALUES
-
-
-INSERT INTO student_fees (student_id, fee_type_id, amount_paid, payment_date, payment_method, receipt_number) VALUES
-
-
-INSERT INTO expenses (expense_date, description, amount, category, payment_method, receipt_number) VALUES
-
-INSERT INTO attendance (student_id, attendance_date, status, remarks) VALUES
-
--- Update classes with teachers
-UPDATE classes SET teacher_id = 1 WHERE class_name = 'Grade 1';
-UPDATE classes SET teacher_id = 2 WHERE class_name = 'Grade 2';
-UPDATE classes SET teacher_id = 3 WHERE class_name = 'Grade 3';
-UPDATE classes SET teacher_id = 4 WHERE class_name = 'Grade 4';
-
--- Assign students to classes
-INSERT INTO student_classes (student_id, class_id, academic_year) VALUES
-(1, 1, '2026'),
-(2, 1, '2026'),
-(3, 4, '2026'),
-(4, 5, '2026'),
-(5, 8, '2026');
+-- Monthly payroll snapshots (also ensured at runtime by FinancialManager)
+CREATE TABLE IF NOT EXISTS teacher_salary_monthly (
+    payroll_id INT AUTO_INCREMENT PRIMARY KEY,
+    teacher_id INT NOT NULL,
+    payroll_month VARCHAR(7) NOT NULL,
+    base_salary DECIMAL(12,2) NOT NULL DEFAULT 0,
+    allowance_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+    advances_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+    gross_salary DECIMAL(12,2) NOT NULL DEFAULT 0,
+    net_salary DECIMAL(12,2) NOT NULL DEFAULT 0,
+    is_paid TINYINT(1) NOT NULL DEFAULT 0,
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_teacher_month (teacher_id, payroll_month),
+    INDEX idx_salary_month (payroll_month),
+    FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id) ON DELETE CASCADE
+) ENGINE=InnoDB;
 
 -- Audit Log Table
 CREATE TABLE audit_log (
@@ -564,7 +534,4 @@ CREATE TABLE audit_log (
     INDEX idx_entity (entity_type, entity_id)
 );
 
--- Sample data removed for a clean production-like schema. To re-add
--- the sample data, run a separate provisioning script or execute the
--- original INSERT statements from a safe, reviewed file.
 COMMIT;

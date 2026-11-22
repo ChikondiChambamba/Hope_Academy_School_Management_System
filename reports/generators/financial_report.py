@@ -135,8 +135,15 @@ def generate_fee_collection_report(filename, start_date=None, end_date=None):
     # Build PDF
     doc.build(story)
 
-def generate_expense_report(filename, start_date=None, end_date=None):
+def generate_expense_report(filename, start_date=None, end_date=None, academic_year=None, term=None):
     """Generate expense report"""
+    academic_year = academic_year or config.Config.CURRENT_ACADEMIC_YEAR
+    term = term or None
+    term_mode = bool(term and not start_date and not end_date)
+
+    if term_mode:
+        start_date, end_date = config.Config.get_term_date_bounds(term)
+
     if not start_date:
         start_date = date(date.today().year, 1, 1)
     if not end_date:
@@ -153,22 +160,38 @@ def generate_expense_report(filename, start_date=None, end_date=None):
     )
     
     # Get data
-    query = """
-        SELECT 
-            e.expense_date,
-            e.description,
-            e.category,
-            e.amount,
-            e.payment_method,
-            e.receipt_number,
-            i.item_name
-        FROM expenses e
-        LEFT JOIN inventory_items i ON e.item_id = i.item_id
-        WHERE e.expense_date BETWEEN %s AND %s
-        ORDER BY e.expense_date DESC
-    """
-    
-    data = db.execute_query(query, (start_date, end_date), fetch=True)
+    if term_mode:
+        from models.finance import Expense
+
+        data = [
+            {
+                'expense_date': expense.expense_date,
+                'description': expense.description,
+                'category': expense.category,
+                'amount': expense.amount,
+                'payment_method': expense.payment_method,
+                'receipt_number': expense.receipt_number,
+                'item_name': expense.item_name,
+            }
+            for expense in Expense.get_term_expenses(academic_year, term)
+        ]
+    else:
+        query = """
+            SELECT
+                e.expense_date,
+                e.description,
+                e.category,
+                e.amount,
+                e.payment_method,
+                e.receipt_number,
+                i.item_name
+            FROM expenses e
+            LEFT JOIN inventory_items i ON e.item_id = i.item_id
+            WHERE e.expense_date BETWEEN %s AND %s
+            ORDER BY e.expense_date DESC
+        """
+
+        data = db.execute_query(query, (start_date, end_date), fetch=True)
     
     # Calculate totals
     total_amount = sum(row['amount'] for row in data) if data else 0
@@ -187,6 +210,8 @@ def generate_expense_report(filename, start_date=None, end_date=None):
     )
     
     story.append(Paragraph(f"EXPENSE REPORT", title_style))
+    if term_mode:
+        story.append(Paragraph(f"Academic Year: {academic_year} - {term}", styles['Normal']))
     story.append(Paragraph(f"Period: {start_date} to {end_date}", styles['Normal']))
     story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Normal']))
     story.append(Spacer(1, 20))
@@ -259,6 +284,8 @@ def generate_financial_summary_report(filename, academic_year=None, term=None):
     """Generate financial summary report"""
     if not academic_year:
         academic_year = config.Config.CURRENT_ACADEMIC_YEAR
+    if not term:
+        term = config.Config.CURRENT_TERM
     
     # Create PDF document
     doc = SimpleDocTemplate(
@@ -270,39 +297,14 @@ def generate_financial_summary_report(filename, academic_year=None, term=None):
         bottomMargin=72
     )
     
-    # Get data
-    # Fee collections
-    fee_query = """
-        SELECT 
-            MONTH(payment_date) as month,
-            SUM(amount_paid) as total_fees,
-            COUNT(*) as payment_count
-        FROM student_fees
-        WHERE YEAR(payment_date) = %s
-        GROUP BY MONTH(payment_date)
-        ORDER BY month
-    """
-    
-    fee_data = db.execute_query(fee_query, (academic_year,), fetch=True)
-    
-    # Expenses
-    expense_query = """
-        SELECT 
-            category,
-            SUM(amount) as total_amount,
-            COUNT(*) as expense_count
-        FROM expenses
-        WHERE YEAR(expense_date) = %s
-        GROUP BY category
-        ORDER BY total_amount DESC
-    """
-    
-    expense_data = db.execute_query(expense_query, (academic_year,), fetch=True)
-    
-    # Calculate totals
-    total_fees = sum(row['total_fees'] for row in fee_data) if fee_data else 0
-    total_expenses = sum(row['total_amount'] for row in expense_data) if expense_data else 0
-    net_balance = total_fees - total_expenses
+    from models.finance import FinancialManager
+
+    summary = FinancialManager.get_term_financial_summary(academic_year=academic_year, term=term)
+    fee_data = summary.get('monthly_breakdown') or []
+    expense_data = summary.get('expense_categories') or []
+    total_fees = float(summary.get('total_income') or 0)
+    total_expenses = float(summary.get('total_expenses') or 0)
+    net_balance = float(summary.get('net_balance') or 0)
     
     # Create story
     story = []
@@ -318,7 +320,7 @@ def generate_financial_summary_report(filename, academic_year=None, term=None):
     )
     
     story.append(Paragraph(f"FINANCIAL SUMMARY REPORT", title_style))
-    story.append(Paragraph(f"Academic Year: {academic_year} - {term if term else 'All Terms'}", styles['Normal']))
+    story.append(Paragraph(f"Academic Year: {academic_year} - {term}", styles['Normal']))
     story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Normal']))
     story.append(Spacer(1, 20))
     
@@ -356,11 +358,11 @@ def generate_financial_summary_report(filename, academic_year=None, term=None):
                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
         
         for row in fee_data:
-            month_name = months[row['month'] - 1] if 1 <= row['month'] <= 12 else f"Month {row['month']}"
+            month_name = row.get('month') or ''
             fee_table_data.append([
                 month_name,
-                format_currency(float(row['total_fees'])),
-                row['payment_count']
+                format_currency(float(row.get('income') or 0)),
+                row.get('payment_count', '')
             ])
         
         fee_table = Table(fee_table_data, colWidths=[1*inch, 1.5*inch, 1*inch])
@@ -563,33 +565,25 @@ def _resolve_fee_type_ids(academic_year, fee_type_filter):
         pass
     return None
 
-def generate_student_fees_report(filename, class_filter="All", balance_filter="All", academic_year=None, fee_type_filter="All Fee Types"):
-    """Generate student fees report"""
+def build_student_fees_report_data(academic_year=None, class_filter="All", balance_filter="All", fee_type_filter="All Fee Types", term=None):
+    """Build student-fee report rows with carried-forward and current-fee breakdowns."""
     if not academic_year:
         academic_year = config.Config.CURRENT_ACADEMIC_YEAR
-    
-    # Create PDF document
-    doc = SimpleDocTemplate(
-        filename,
-        pagesize=A4,
-        rightMargin=72,
-        leftMargin=72,
-        topMargin=72,
-        bottomMargin=72
-    )
-    
+    if not term:
+        term = config.Config.CURRENT_TERM
+
     from models.finance import FinancialManager
     fee_type_ids = _resolve_fee_type_ids(academic_year, fee_type_filter)
     if fee_type_ids is None:
         balances = FinancialManager.get_student_balances(
             academic_year=academic_year,
-            term=config.Config.CURRENT_TERM
+            term=term
         )
     elif len(fee_type_ids) == 1:
         balances = FinancialManager.get_student_balances(
             academic_year=academic_year,
             fee_type_id=fee_type_ids[0],
-            term=config.Config.CURRENT_TERM
+            term=term
         )
     elif len(fee_type_ids) > 1:
         merged = {}
@@ -597,7 +591,7 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
             rows = FinancialManager.get_student_balances(
                 academic_year=academic_year,
                 fee_type_id=fid,
-                term=config.Config.CURRENT_TERM
+                term=term
             ) or []
             for row in rows:
                 sid = row.get('student_id')
@@ -605,26 +599,53 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
                     continue
                 if sid not in merged:
                     merged[sid] = {
+                        'student_id': sid,
                         'student_code': row.get('student_code'),
                         'student_name': row.get('student_name'),
                         'class': row.get('class'),
                         'total_due': 0.0,
                         'total_paid': 0.0,
-                        'carried_balance': float(row.get('carried_balance') or 0)
+                        'current_paid': 0.0,
+                        'carried_balance': 0.0,
+                        'opening_carried_balance': 0.0,
+                        'paid_to_carried_balance': 0.0,
+                        'opening_due': 0.0,
                     }
                 merged[sid]['total_due'] += float(row.get('total_due') or 0)
-                merged[sid]['total_paid'] += float(row.get('total_paid') or 0)
+                merged[sid]['current_paid'] += float(row.get('paid_to_current_fees') or 0)
+                merged[sid]['opening_carried_balance'] = max(
+                    float(merged[sid]['opening_carried_balance'] or 0),
+                    float(row.get('opening_carried_balance') or 0)
+                )
+                merged[sid]['paid_to_carried_balance'] = max(
+                    float(merged[sid]['paid_to_carried_balance'] or 0),
+                    float(row.get('paid_to_carried_balance') or 0)
+                )
+                merged[sid]['total_paid'] = (
+                    float(merged[sid]['current_paid'] or 0)
+                    + float(merged[sid]['paid_to_carried_balance'] or 0)
+                )
         balances = []
         for item in merged.values():
-            bal = float(item['total_due']) - float(item['total_paid']) + float(item['carried_balance'])
+            allocation = FinancialManager._allocate_opening_balance(
+                total_current_fees=float(item['total_due']),
+                total_paid=float(item['total_paid']),
+                opening_carried_balance=float(item['opening_carried_balance']),
+                carried_paid=float(item['paid_to_carried_balance']),
+                current_paid=float(item['current_paid'])
+            )
             balances.append({
+                'student_id': item['student_id'],
                 'student_code': item['student_code'],
                 'student_name': item['student_name'],
                 'class': item['class'],
                 'total_due': item['total_due'],
                 'total_paid': item['total_paid'],
-                'carried_balance': item['carried_balance'],
-                'balance': bal
+                'carried_balance': allocation['remaining_carried_balance'],
+                'opening_carried_balance': allocation['opening_carried_balance'],
+                'paid_to_carried_balance': allocation['paid_to_carried_balance'],
+                'opening_due': allocation['opening_due'],
+                'balance': allocation['balance']
             })
     else:
         balances = []
@@ -635,6 +656,11 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
             continue
 
         balance = float(row.get('balance') or 0)
+        current_fee_due = float(row.get('total_due') or 0)
+        carried_balance = float(row.get('carried_balance') or 0)
+        opening_carried_balance = float(row.get('opening_carried_balance') or carried_balance or 0)
+        paid_to_carried_balance = float(row.get('paid_to_carried_balance') or 0)
+        opening_due = float(row.get('opening_due') or (current_fee_due + opening_carried_balance))
         total_paid = float(row.get('total_paid') or 0)
         if balance_filter == 'With Balance Only' and balance <= 0:
             continue
@@ -644,22 +670,77 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
             continue
         if balance_filter == 'Partial Only' and not (balance > 0 and total_paid > 0):
             continue
+        if balance_filter == 'Carried Forward Only' and opening_carried_balance <= 0:
+            continue
 
         data.append({
+            'student_id': row.get('student_id'),
             'student_code': row.get('student_code'),
             'student_name': row.get('student_name'),
             'class': row.get('class'),
-            'total_due': float(row.get('total_due') or 0) + float(row.get('carried_balance') or 0),
+            'current_fee_due': current_fee_due,
+            'carried_balance': carried_balance,
+            'opening_carried_balance': opening_carried_balance,
+            'paid_to_carried_balance': paid_to_carried_balance,
+            'opening_due': opening_due,
             'total_paid': total_paid,
             'balance': balance
         })
 
     data.sort(key=lambda r: (r.get('class') or '', r.get('student_name') or '', -float(r.get('balance') or 0)))
-    
-    # Calculate totals
-    total_due = sum(float(row['total_due']) for row in data) if data else 0
+
+    carried_forward_rows = [row for row in data if float(row.get('opening_carried_balance') or 0) > 0]
+
+    total_current_due = sum(float(row['current_fee_due']) for row in data) if data else 0
+    total_carried = sum(float(row['opening_carried_balance']) for row in data) if data else 0
+    total_due = sum(float(row['opening_due']) for row in data) if data else 0
     total_paid = sum(float(row['total_paid']) for row in data) if data else 0
     total_balance = sum(float(row['balance']) for row in data) if data else 0
+
+    return {
+        'academic_year': academic_year,
+        'term': term,
+        'class_filter': class_filter,
+        'balance_filter': balance_filter,
+        'fee_type_filter': fee_type_filter,
+        'summary': {
+            'total_students': len(data),
+            'students_with_carried_balance': len(carried_forward_rows),
+            'total_current_fee_due': total_current_due,
+            'total_carried_forward': total_carried,
+            'total_opening_due': total_due,
+            'total_paid': total_paid,
+            'total_balance': total_balance,
+        },
+        'carried_forward_rows': carried_forward_rows,
+        'current_fee_rows': data,
+    }
+
+def generate_student_fees_report(filename, class_filter="All", balance_filter="All", academic_year=None, fee_type_filter="All Fee Types", term=None):
+    """Generate student fees report."""
+    report = build_student_fees_report_data(
+        academic_year=academic_year,
+        class_filter=class_filter,
+        balance_filter=balance_filter,
+        fee_type_filter=fee_type_filter,
+        term=term,
+    )
+
+    # Create PDF document
+    doc = SimpleDocTemplate(
+        filename,
+        pagesize=A4,
+        rightMargin=72,
+        leftMargin=72,
+        topMargin=72,
+        bottomMargin=72
+    )
+
+    data = report.get('current_fee_rows') or []
+    carried_rows = report.get('carried_forward_rows') or []
+    summary = report.get('summary') or {}
+    academic_year = report.get('academic_year') or academic_year or config.Config.CURRENT_ACADEMIC_YEAR
+    term = report.get('term') or term or config.Config.CURRENT_TERM
     
     # Create story
     story = []
@@ -675,17 +756,20 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
     )
     
     story.append(Paragraph(f"STUDENT FEES REPORT", title_style))
-    story.append(Paragraph(f"Academic Year: {academic_year}", styles['Normal']))
+    story.append(Paragraph(f"Academic Year: {academic_year} | Term: {term}", styles['Normal']))
     story.append(Paragraph(f"Class Filter: {class_filter} | Balance Filter: {balance_filter} | Fee Filter: {fee_type_filter}", styles['Normal']))
     story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Normal']))
     story.append(Spacer(1, 20))
     
     # Summary
     summary_data = [
-        ['Total Students:', len(data)],
-        ['Total Fees Due:', format_currency(total_due)],
-        ['Total Fees Paid:', format_currency(total_paid)],
-        ['Total Balance:', format_currency(total_balance)]
+        ['Total Students:', summary.get('total_students', 0)],
+        ['Students With Carried Forward Balance:', summary.get('students_with_carried_balance', 0)],
+        ['Current Term Fees Due:', format_currency(summary.get('total_current_fee_due', 0))],
+        ['Carried Forward Fees:', format_currency(summary.get('total_carried_forward', 0))],
+        ['Opening Fees Due:', format_currency(summary.get('total_opening_due', 0))],
+        ['Total Fees Paid:', format_currency(summary.get('total_paid', 0))],
+        ['Total Balance:', format_currency(summary.get('total_balance', 0))]
     ]
     
     summary_table = Table(summary_data, colWidths=[2*inch, 2*inch])
@@ -702,51 +786,52 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
     
     story.append(summary_table)
     story.append(Spacer(1, 20))
-    
-    # Main data table
-    if data:
-        # Prepare table data
-        table_data = [['Student Code', 'Name', 'Class', 'Total Due', 'Paid', 'Balance']]
-        
-        for row in data:
-            balance = float(row['balance'])
-            balance_text = format_currency(balance)
-            
-            # Color code balances
-            if balance > 0:
-                balance_text = f"<font color='red'>{balance_text}</font>"
-            elif balance < 0:
-                balance_text = f"<font color='green'>{balance_text} (Credit)</font>"
-            
-                table_data.append([
+
+    if carried_rows:
+        story.append(Paragraph("Carried Forward Fee Breakdown", styles['Heading2']))
+        carried_table_data = [['Student Code', 'Name', 'Class', 'Carried Forward', 'Current Fee Due', 'Opening Due', 'Balance']]
+        for row in carried_rows:
+            carried_table_data.append([
                 row['student_code'],
                 row['student_name'],
                 row['class'],
-                format_currency(float(row['total_due'])),
-                format_currency(float(row['total_paid'])),
-                balance_text
+                format_currency(float(row['carried_balance'])),
+                format_currency(float(row['current_fee_due'])),
+                format_currency(float(row['opening_due'])),
+                format_currency(float(row['balance']))
             ])
-        
-        # Create table with Paragraph for HTML formatting
-        from reportlab.platypus.flowables import KeepTogether
-        
-        story.append(Paragraph("Student Fee Balances", styles['Heading2']))
-        
-        # We need to handle the table differently due to HTML formatting
-        # For simplicity, let's create a simpler table
-        simple_table_data = [['Student Code', 'Name', 'Class', 'Total Due', 'Paid', 'Balance']]
-        
+
+        carried_table = Table(carried_table_data, colWidths=[0.8*inch, 1.5*inch, 0.8*inch, 1.0*inch, 1.0*inch, 1.0*inch, 1.0*inch])
+        carried_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        story.append(carried_table)
+        story.append(Spacer(1, 20))
+
+    # Main data table
+    if data:
+        story.append(Paragraph("Current Fee Report", styles['Heading2']))
+        simple_table_data = [['Student Code', 'Name', 'Class', 'Current Fee Due', 'Carried Forward', 'Opening Due', 'Paid', 'Balance']]
         for row in data:
             simple_table_data.append([
                 row['student_code'],
                 row['student_name'],
                 row['class'],
-                format_currency(float(row['total_due'])),
+                format_currency(float(row['current_fee_due'])),
+                format_currency(float(row['carried_balance'])),
+                format_currency(float(row['opening_due'])),
                 format_currency(float(row['total_paid'])),
                 format_currency(float(row['balance']))
             ])
         
-        table = Table(simple_table_data, colWidths=[0.8*inch, 1.5*inch, 0.7*inch, 1*inch, 1*inch, 1*inch])
+        table = Table(simple_table_data, colWidths=[0.8*inch, 1.4*inch, 0.7*inch, 1.0*inch, 1.0*inch, 1.0*inch, 0.9*inch, 1.0*inch])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -760,7 +845,7 @@ def generate_student_fees_report(filename, class_filter="All", balance_filter="A
         
         # Color rows based on balance
         for i in range(1, len(simple_table_data)):
-            balance_val = float(parse_currency(simple_table_data[i][5]))
+            balance_val = float(parse_currency(simple_table_data[i][7]))
             if balance_val > 0:
                 table.setStyle(TableStyle([('TEXTCOLOR', (0, i), (-1, i), colors.red)]))
             elif balance_val < 0:

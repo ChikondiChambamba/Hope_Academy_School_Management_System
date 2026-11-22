@@ -83,7 +83,14 @@ Hope_Academy_School_Management_System/
 │   ├── __init__.py
 │   ├── student.py                 # Student data model & operations
 │   ├── teacher.py                 # Teacher data model & operations
-│   ├── finance.py                 # Financial models (fees, payments, expenses)
+│   ├── finance.py                 # Facade: FeeType, FeePayment, Expense, FinancialManager
+│   ├── finance_fee_types.py       # FeeType
+│   ├── finance_payments.py        # FeePayment
+│   ├── finance_expenses.py        # Expense (term-scoped)
+│   ├── finance_balance.py         # Balance calculation mixin
+│   ├── finance_rollover_*.py      # Term rollover: setup / preview / execute mixins
+│   ├── finance_salary.py          # Monthly payroll snapshot mixin
+│   ├── finance_summary.py         # Financial summary mixin
 │   ├── attendance.py              # Attendance tracking models
 │   ├── inventory.py               # Inventory management models
 │   └── expense_category.py        # Expense categorization
@@ -98,27 +105,35 @@ Hope_Academy_School_Management_System/
 │   ├── inventory.py               # Inventory management UI
 │   ├── attendance.py              # Attendance recording UI
 │   ├── reports_tab.py             # Reports generation UI
-│   ├── dialogs.py                 # Modal dialogs
-│   ├── validators.py              # Input validation rules
-│   └── pdf_generator.py           # PDF report generation
+│   └── dialogs.py                 # Modal dialogs (login, users, preferences, ...)
 │
 ├── reports/                       # Report generation
 │   ├── __init__.py
+│   ├── templates/                 # HTML report templates
 │   ├── generators/
 │   │   ├── __init__.py
 │   │   ├── financial_report.py    # Financial report generation
+│   │   ├── financial_reports/     # Import alias package for financial_report
 │   │   ├── inventory_reports.py   # Inventory report generation
 │   │   └── student_reports.py     # Student report generation
 │
 ├── utils/                         # Utility layer
 │   ├── __init__.py
 │   ├── helpers.py                 # Common helper functions
-│   ├── validators.py              # Input validation utilities
-│   ├── export_import.py           # Data export/import functionality
-│   └── pdf_generator.py           # PDF generation utilities
+│   ├── validators.py              # Email/phone validation used by models
+│   ├── audit_logger.py            # Audit trail (audit_log table)
+│   ├── error_handler.py           # Exceptions, require_permission decorator
+│   ├── email_notifier.py          # Email notifications
+│   └── export_import.py           # Data export/import functionality
+│
+├── setup_database.py              # Create database from database/schema.sql
+├── apply_db_changes.py            # Idempotent migrations for existing databases
+├── HopeSchoolManagement.spec      # PyInstaller spec (build with build_exe.bat)
+├── school_managemt_setup.iss      # Inno Setup installer script
+│
+├── tests/                         # DB-free unit tests (python -m unittest discover -s tests -t .)
 │
 ├── scripts/                       # Utility scripts
-│   ├── setup_database.py          # Database initialization
 │   ├── check_classes.py           # Class verification
 │   ├── repair_exemptions.py       # Fee exemption repair
 │   └── ... (other utility scripts)

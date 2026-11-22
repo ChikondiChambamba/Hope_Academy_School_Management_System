@@ -8,6 +8,7 @@ import re
 import config
 from database.connection import db
 from reports.generators.financial_reports import (
+    build_student_fees_report_data,
     generate_fee_collection_report,
     generate_expense_report,
     generate_financial_summary_report,
@@ -118,7 +119,8 @@ class ReportsTab:
             'Balance Reports': [
                 ('students_with_balance', 'Students With Balance'),
                 ('students_unpaid', 'Students Unpaid'),
-                ('students_partial', 'Students Partial')
+                ('students_partial', 'Students Partial'),
+                ('students_carried_forward', 'Students Carried Forward')
             ],
             'Student Reports': [
                 ('student_list', 'Student List'),
@@ -281,6 +283,11 @@ class ReportsTab:
             'students_partial': {
                 'name': 'Students Partial',
                 'description': 'Generate report of students with partial payments and remaining balances.',
+                'config': self.setup_balance_status_config
+            },
+            'students_carried_forward': {
+                'name': 'Students Carried Forward',
+                'description': 'Generate report of students with carried-forward balances from the previous term.',
                 'config': self.setup_balance_status_config
             },
             'student_list': {
@@ -452,7 +459,7 @@ class ReportsTab:
         balance_combo = ttk.Combobox(
             self.config_frame,
             textvariable=self.balance_filter_var,
-            values=['All', 'With Balance Only', 'Cleared Only'],
+            values=['All', 'With Balance Only', 'Cleared Only', 'Carried Forward Only'],
             width=15,
             state='readonly'
         )
@@ -483,6 +490,16 @@ class ReportsTab:
         year_combo.grid(row=3, column=1, sticky='w', pady=5)
         year_combo.bind('<<ComboboxSelected>>', lambda e: self.populate_fee_type_filter())
         self.populate_fee_type_filter()
+
+        ttk.Label(self.config_frame, text="Term Basis:").grid(row=4, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.fee_term_var = tk.StringVar(value=config.Config.CURRENT_TERM)
+        ttk.Combobox(
+            self.config_frame,
+            textvariable=self.fee_term_var,
+            values=getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3']),
+            width=12,
+            state='readonly'
+        ).grid(row=4, column=1, sticky='w', pady=5)
 
     def setup_balance_status_config(self):
         """Setup configuration for dedicated balance status reports."""
@@ -528,6 +545,16 @@ class ReportsTab:
         year_combo.grid(row=2, column=1, sticky='w', pady=5)
         year_combo.bind('<<ComboboxSelected>>', lambda e: self.populate_fee_type_filter())
         self.populate_fee_type_filter()
+
+        ttk.Label(self.config_frame, text="Term Basis:").grid(row=3, column=0, sticky='e', padx=(0, 10), pady=5)
+        self.fee_term_var = tk.StringVar(value=config.Config.CURRENT_TERM)
+        ttk.Combobox(
+            self.config_frame,
+            textvariable=self.fee_term_var,
+            values=getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3']),
+            width=12,
+            state='readonly'
+        ).grid(row=3, column=1, sticky='w', pady=5)
 
     def populate_fee_type_filter(self):
         """Populate fee type filter options for selected academic year."""
@@ -779,14 +806,18 @@ class ReportsTab:
             params['balance_filter'] = self.balance_filter_var.get()
             params['academic_year'] = self.fee_year_var.get()
             params['fee_type_filter'] = self.fee_type_filter_var.get()
-        elif self.current_report in ['students_with_balance', 'students_unpaid', 'students_partial']:
+            params['term'] = self.fee_term_var.get() if hasattr(self, 'fee_term_var') else config.Config.CURRENT_TERM
+        elif self.current_report in ['students_with_balance', 'students_unpaid', 'students_partial', 'students_carried_forward']:
             params['class_filter'] = self.class_filter_var.get()
             params['academic_year'] = self.fee_year_var.get()
             params['fee_type_filter'] = self.fee_type_filter_var.get()
+            params['term'] = self.fee_term_var.get() if hasattr(self, 'fee_term_var') else config.Config.CURRENT_TERM
             if self.current_report == 'students_with_balance':
                 params['balance_filter'] = 'With Balance Only'
             elif self.current_report == 'students_unpaid':
                 params['balance_filter'] = 'Unpaid Only'
+            elif self.current_report == 'students_carried_forward':
+                params['balance_filter'] = 'Carried Forward Only'
             else:
                 params['balance_filter'] = 'Partial Only'
             
@@ -876,7 +907,7 @@ class ReportsTab:
                 return self.get_student_fees_data(params, preview)
             elif self.current_report == 'salary_report':
                 return self.get_salary_report_data(params, preview)
-            elif self.current_report in ['students_with_balance', 'students_unpaid', 'students_partial']:
+            elif self.current_report in ['students_with_balance', 'students_unpaid', 'students_partial', 'students_carried_forward']:
                 return self.get_student_fees_data(params, preview)
             elif self.current_report == 'student_list':
                 return self.get_student_list_data(params, preview)
@@ -949,128 +980,33 @@ class ReportsTab:
     
     def get_financial_summary_data(self, params, preview=False):
         """Get financial summary data"""
-        # This would be more complex in reality
-        summary = {}
-        
-        # Get fee totals
-        fee_query = """
-            SELECT 
-                COALESCE(SUM(amount_paid), 0) as total_fees
-            FROM student_fees
-            WHERE YEAR(payment_date) = %s
-        """
-        fee_result = db.execute_query(fee_query, (params['academic_year'],), fetch=True)
-        summary['total_fees'] = fee_result[0]['total_fees'] if fee_result else 0
-        
-        # Get expense totals
-        expense_query = """
-            SELECT 
-                category,
-                COALESCE(SUM(amount), 0) as total_amount
-            FROM expenses
-            WHERE YEAR(expense_date) = %s
-            GROUP BY category
-        """
-        expense_result = db.execute_query(expense_query, (params['academic_year'],), fetch=True)
-        summary['expenses'] = expense_result if expense_result else []
-        
-        # Get total expenses
-        total_expense_query = """
-            SELECT COALESCE(SUM(amount), 0) as total_expenses
-            FROM expenses
-            WHERE YEAR(expense_date) = %s
-        """
-        total_expense_result = db.execute_query(total_expense_query, (params['academic_year'],), fetch=True)
-        summary['total_expenses'] = total_expense_result[0]['total_expenses'] if total_expense_result else 0
-        
-        summary['net_balance'] = summary['total_fees'] - summary['total_expenses']
-        
-        return summary
+        from models.finance import FinancialManager
+
+        term_summary = FinancialManager.get_term_financial_summary(
+            academic_year=params['academic_year'],
+            term=params.get('term')
+        )
+        return {
+            'total_fees': term_summary.get('total_income', 0),
+            'expenses': term_summary.get('expense_categories', []),
+            'total_expenses': term_summary.get('total_expenses', 0),
+            'net_balance': term_summary.get('net_balance', 0)
+        }
     
     def get_student_fees_data(self, params, preview=False):
         """Get student fees data"""
-        from models.finance import FinancialManager
-        fee_type_ids = self._resolve_fee_type_ids(params['academic_year'], params.get('fee_type_filter'))
-        balances = []
-        if fee_type_ids is None:
-            balances = FinancialManager.get_student_balances(
-                academic_year=params['academic_year'],
-                term=config.Config.CURRENT_TERM
-            )
-        elif len(fee_type_ids) == 1:
-            balances = FinancialManager.get_student_balances(
-                academic_year=params['academic_year'],
-                fee_type_id=fee_type_ids[0],
-                term=config.Config.CURRENT_TERM
-            )
-        elif len(fee_type_ids) > 1:
-            merged = {}
-            for fid in fee_type_ids:
-                rows = FinancialManager.get_student_balances(
-                    academic_year=params['academic_year'],
-                    fee_type_id=fid,
-                    term=config.Config.CURRENT_TERM
-                ) or []
-                for row in rows:
-                    sid = row.get('student_id')
-                    if sid is None:
-                        continue
-                    if sid not in merged:
-                        merged[sid] = {
-                            'student_id': sid,
-                            'student_code': row.get('student_code'),
-                            'student_name': row.get('student_name'),
-                            'class': row.get('class'),
-                            'total_due': 0.0,
-                            'total_paid': 0.0,
-                            # Carry forward only once for multi-fee aggregation.
-                            'carried_balance': float(row.get('carried_balance') or 0)
-                        }
-                    merged[sid]['total_due'] += float(row.get('total_due') or 0)
-                    merged[sid]['total_paid'] += float(row.get('total_paid') or 0)
-
-            for item in merged.values():
-                bal = float(item['total_due']) - float(item['total_paid']) + float(item['carried_balance'])
-                balances.append({
-                    'student_id': item['student_id'],
-                    'student_code': item['student_code'],
-                    'student_name': item['student_name'],
-                    'class': item['class'],
-                    'total_due': item['total_due'],
-                    'total_paid': item['total_paid'],
-                    'carried_balance': item['carried_balance'],
-                    'balance': bal
-                })
-
-        out = []
-        for row in balances:
-            if params['class_filter'] != 'All' and row.get('class') != params['class_filter']:
-                continue
-
-            balance = float(row.get('balance') or 0)
-            if params['balance_filter'] == 'With Balance Only' and balance <= 0:
-                continue
-            if params['balance_filter'] == 'Cleared Only' and balance > 0:
-                continue
-            if params['balance_filter'] == 'Unpaid Only' and not (balance > 0 and float(row.get('total_paid') or 0) <= 0):
-                continue
-            if params['balance_filter'] == 'Partial Only' and not (balance > 0 and float(row.get('total_paid') or 0) > 0):
-                continue
-
-            out.append({
-                'student_id': row.get('student_id'),
-                'student_code': row.get('student_code'),
-                'student_name': row.get('student_name'),
-                'class': row.get('class'),
-                'total_due': float(row.get('total_due') or 0) + float(row.get('carried_balance') or 0),
-                'total_paid': float(row.get('total_paid') or 0),
-                'balance': balance
-            })
-
-        out.sort(key=lambda r: (r.get('class') or '', r.get('student_name') or '', -float(r.get('balance') or 0)))
+        report = build_student_fees_report_data(
+            academic_year=params['academic_year'],
+            class_filter=params['class_filter'],
+            balance_filter=params['balance_filter'],
+            fee_type_filter=params.get('fee_type_filter', 'All Fee Types'),
+            term=params.get('term') or config.Config.CURRENT_TERM
+        )
         if preview and getattr(config.Config, 'PREVIEW_LIMIT', 0) > 0:
-            return out[:config.Config.PREVIEW_LIMIT]
-        return out
+            report = dict(report)
+            report['carried_forward_rows'] = (report.get('carried_forward_rows') or [])[:config.Config.PREVIEW_LIMIT]
+            report['current_fee_rows'] = (report.get('current_fee_rows') or [])[:config.Config.PREVIEW_LIMIT]
+        return report
     
     def get_student_list_data(self, params, preview=False):
         """Get student list data"""
@@ -1180,7 +1116,7 @@ class ReportsTab:
                 SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) as absent_count,
                 SUM(CASE WHEN a.status = 'Late' THEN 1 ELSE 0 END) as late_count,
                 SUM(CASE WHEN a.status = 'Excused' THEN 1 ELSE 0 END) as excused_count,
-                ROUND((SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) as attendance_rate
+                ROUND(SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as attendance_rate
             FROM attendance a
             JOIN students s ON a.student_id = s.student_id
             WHERE a.attendance_date BETWEEN %s AND %s
@@ -1326,14 +1262,14 @@ class ReportsTab:
         """Get class list data"""
         query = """
             SELECT 
-                class_name,
+                class AS class_name,
                 COUNT(*) as student_count,
                 MIN(enrollment_date) as oldest_enrollment,
                 MAX(enrollment_date) as latest_enrollment
             FROM students
             WHERE is_active = 1
-            GROUP BY class_name
-            ORDER BY class_name
+            GROUP BY class
+            ORDER BY class
         """
         
         return db.execute_query(query, fetch=True)
@@ -1448,6 +1384,11 @@ class ReportsTab:
                             text += f"  {subkey}: {subvalue}\n"
                     else:
                         text += f"  {item}\n"
+                text += "\n"
+            elif isinstance(value, dict):
+                text += f"{key.replace('_', ' ').title()}:\n"
+                for subkey, subvalue in value.items():
+                    text += f"  {subkey}: {subvalue}\n"
                 text += "\n"
             else:
                 text += f"{key.replace('_', ' ').title()}: {value}\n"
@@ -1565,17 +1506,19 @@ class ReportsTab:
                     class_filter=params['class_filter'],
                     balance_filter=params['balance_filter'],
                     academic_year=params['academic_year'],
-                    fee_type_filter=params.get('fee_type_filter', 'All Fee Types')
+                    fee_type_filter=params.get('fee_type_filter', 'All Fee Types'),
+                    term=params.get('term')
                 )
             elif self.current_report == 'salary_report':
                 generate_salary_report(filename, year_month=params.get('year_month'))
-            elif self.current_report in ['students_with_balance', 'students_unpaid', 'students_partial']:
+            elif self.current_report in ['students_with_balance', 'students_unpaid', 'students_partial', 'students_carried_forward']:
                 generate_student_fees_report(
                     filename,
                     class_filter=params['class_filter'],
                     balance_filter=params['balance_filter'],
                     academic_year=params['academic_year'],
-                    fee_type_filter=params.get('fee_type_filter', 'All Fee Types')
+                    fee_type_filter=params.get('fee_type_filter', 'All Fee Types'),
+                    term=params.get('term')
                 )
             elif self.current_report == 'student_list':
                 generate_student_list_report(
@@ -1655,11 +1598,18 @@ class ReportsTab:
             elif isinstance(data, dict):
                 # Summary data - create multiple sheets
                 with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                    summary_rows = []
                     for key, value in data.items():
                         if isinstance(value, list):
                             pd.DataFrame(value).to_excel(writer, sheet_name=key[:31], index=False)
+                        elif isinstance(value, dict):
+                            pd.DataFrame(
+                                [{'metric': subkey, 'value': subvalue} for subkey, subvalue in value.items()]
+                            ).to_excel(writer, sheet_name=key[:31], index=False)
                         else:
-                            pd.DataFrame({key: [value]}).to_excel(writer, sheet_name='Summary', index=False)
+                            summary_rows.append({'metric': key, 'value': value})
+                    if summary_rows:
+                        pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Summary', index=False)
             else:
                 pd.DataFrame([{'Data': str(data)}]).to_excel(filename, index=False)
             

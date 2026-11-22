@@ -1,11 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
-
+# The single PyInstaller spec for this project. Build with build_exe.bat
+# (or: python -m PyInstaller --clean HopeSchoolManagement.spec).
+# Output: dist/HopeSchoolManagement.exe, which school_managemt_setup.iss packages.
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # Read at runtime via config.RESOURCE_DIR (sys._MEIPASS when frozen).
+    datas=[
+        ('assets', 'assets'),
+        ('docs/user_manual.pdf', 'docs'),
+        ('database/schema.sql', 'database'),
+        ('database/schema_sqlite.sql', 'database'),   # created automatically on first launch
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,5 +43,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets\\Logo.ico'],
+    icon=['assets\\app.ico'],
 )

@@ -204,8 +204,9 @@ class Teacher:
     
     @classmethod
     def from_dict(cls, data: Dict) -> 'Teacher':
-        """Create Teacher instance from dictionary"""
-        return cls(**data)
+        """Create Teacher instance from a query row (extra joined columns are ignored)."""
+        from .row_mapping import from_row
+        return from_row(cls, data)
     
     @classmethod
     def get_all(cls, active_only: bool = True) -> List['Teacher']:

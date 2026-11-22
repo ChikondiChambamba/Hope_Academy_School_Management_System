@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 from datetime import datetime, date
 import config
 from database.connection import db
+from models.inventory import InventoryManager
 from utils.helpers import format_currency, parse_currency
 
 class InventoryTab:
@@ -696,12 +697,12 @@ class InventoryTab:
                     return
                 
                 purpose = purpose_text.get("1.0", "end-1c").strip()
-                
-                # Update quantity
-                query = "UPDATE inventory_items SET quantity = quantity - %s WHERE item_id = %s"
-                db.execute_query(query, (qty, item_id))
-                
-                # Record usage (could create usage log table)
+
+                ok, message = InventoryManager.use_item(item_id, qty, purpose)
+                if not ok:
+                    messagebox.showerror("Error", message)
+                    return
+
                 messagebox.showinfo("Success", f"Used {qty} units of {item_name}")
                 dialog.destroy()
                 self.load_inventory()
@@ -741,8 +742,11 @@ class InventoryTab:
     def print_inventory(self):
         """Print inventory list"""
         try:
-            from utils.pdf_generator import generate_inventory_report
-            filename = generate_inventory_report()
+            from reports.generators.inventory_reports import generate_inventory_list_report
+            reports_dir = config.Config.PATHS['reports']
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            filename = reports_dir / f"inventory_list_{date.today().strftime('%Y%m%d')}.pdf"
+            generate_inventory_list_report(str(filename))
             messagebox.showinfo("Success", f"Inventory report generated:\n{filename}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to generate report: {str(e)}")

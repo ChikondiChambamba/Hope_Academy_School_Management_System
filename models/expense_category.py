@@ -16,7 +16,9 @@ class ExpenseCategory:
 
     @staticmethod
     def ensure_table():
-        """Create table if it doesn't exist."""
+        """Create table if it doesn't exist (older MySQL databases)."""
+        if db.manages_schema or not db.once('schema.expense_categories'):
+            return
         query = """
         CREATE TABLE IF NOT EXISTS expense_categories (
             category_id INT PRIMARY KEY AUTO_INCREMENT,

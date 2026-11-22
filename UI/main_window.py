@@ -8,6 +8,17 @@ from database.connection import db
 import os
 
 class MainWindow:
+    # Tab name -> permission feature required to see it.
+    TAB_FEATURES = {
+        'Dashboard': 'dashboard',
+        'Students': 'students',
+        'Teachers': 'teachers',
+        'Finance': 'finance',
+        'Inventory': 'inventory',
+        'Attendance': 'attendance',
+        'Reports': 'reports',
+    }
+
     def __init__(self, root):
         self.root = root
         self.setup_ui()
@@ -23,7 +34,7 @@ class MainWindow:
         self.main_container = ttk.Frame(self.root)
         self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Create tabs based on current role (roles managed in Preferences)
+        # Create tabs permitted for the current role
         self.create_tabs()
         # Bind application-wide events
         try:
@@ -38,9 +49,16 @@ class MainWindow:
         
         # Create status bar
         self.create_status_bar()
-        
-        # Update status
-        self.update_status("Ready")
+        self._update_session_status()
+
+        # Login is switched on and nobody is logged in yet: ask for credentials
+        # once the main window is on screen.
+        if config.Config.login_required() and not config.Config.CURRENT_USER:
+            self.root.after(200, self.show_login)
+            # While the user types their password, pay Tk's one-off emoji font
+            # lookup so the dashboard appears promptly after logging in.
+            from UI.dashboard import warm_up_icon_font
+            self.root.after(400, lambda: warm_up_icon_font(self.root))
     
     def setup_styles(self):
         """Configure ttk styles"""
@@ -121,23 +139,27 @@ class MainWindow:
                              command=self.print_data,
                              accelerator="Ctrl+P")
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", 
+        login_on = config.Config.login_required()
+        if login_on:
+            file_menu.add_command(label="Login",
+                     command=self.show_login,
+                     accelerator="Ctrl+I")
+            file_menu.add_command(label="Logout",
+                     command=self.logout,
+                     accelerator="Ctrl+L")
+            file_menu.add_separator()
+        file_menu.add_command(label="Exit",
                              command=self.root.quit,
                              accelerator="Ctrl+Q")
-        file_menu.add_command(label="Login",
-                 command=self.show_login,
-                 accelerator="Ctrl+I")
-        file_menu.add_command(label="Logout",
-                 command=self.logout,
-                 accelerator="Ctrl+L")
-        
+
         # Edit menu
         edit_menu = Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Edit", menu=edit_menu)
-        edit_menu.add_command(label="Preferences", 
+        edit_menu.add_command(label="Preferences",
                              command=self.open_preferences)
-        edit_menu.add_command(label="Change Password",
-                 command=self.open_change_password)
+        if login_on:
+            edit_menu.add_command(label="Change Password",
+                     command=self.open_change_password)
         # User management
         edit_menu.add_command(label="Manage Users",
                              command=self.open_user_manager,
@@ -155,21 +177,13 @@ class MainWindow:
         # Initial checked state follows permissions so users see which tabs
         # their role allows but can toggle visibility on/off.
         self.tab_vars = {}
-        tabs_map = [
-            ('dashboard', 'Dashboard'),
-            ('students', 'Students'),
-            ('teachers', 'Teachers'),
-            ('finance', 'Finance'),
-            ('inventory', 'Inventory'),
-            ('attendance', 'Attendance'),
-            ('reports', 'Reports')
-        ]
-        for feature, tab_name in tabs_map:
+        for tab_name, feature in self.TAB_FEATURES.items():
             allowed = config.Config.has_permission(feature)
             var = tk.BooleanVar(value=allowed)
             self.tab_vars[tab_name] = var
             view_menu.add_checkbutton(label=tab_name,
                                       variable=var,
+                                      state='normal' if allowed else 'disabled',
                                       command=lambda t=tab_name: self.toggle_tab(t))
         
         # Tools menu
@@ -234,25 +248,20 @@ class MainWindow:
         self.root.bind('<Control-b>', lambda e: self.backup_database())
         self.root.bind('<Control-p>', lambda e: self.print_data())
         self.root.bind('<Control-q>', lambda e: self.root.quit())
-        self.root.bind('<Control-l>', lambda e: self.logout())
+        if login_on:
+            self.root.bind('<Control-i>', lambda e: self.show_login())
+            self.root.bind('<Control-l>', lambda e: self.logout())
+        else:
+            self.root.unbind('<Control-i>')
+            self.root.unbind('<Control-l>')
         self.root.bind('<Control-u>', lambda e: self.open_user_manager())
         self.root.bind('<F5>', lambda e: self.refresh_all())
 
     def logout(self):
-        """Logout current user and refresh UI (roles managed in Preferences)."""
+        """End the current session and drop to the logged-out (no access) view."""
         try:
-            # Clear current user
-            try:
-                config.Config.CURRENT_USER = None
-                # keep CURRENT_USER_ROLE as-is until new login; persist removal of CURRENT_USER
-                config.Config.save_user_settings()
-            except Exception:
-                pass
-            # Recreate tabs to reflect that no user is selected (role remains as in Preferences)
-            try:
-                self.on_user_role_changed()
-            except Exception:
-                pass
+            config.Config.logout()
+            self.on_user_role_changed()
         except Exception as e:
             messagebox.showerror('Logout Failed', str(e))
 
@@ -265,15 +274,21 @@ class MainWindow:
                     self.notebook.destroy()
                 except Exception:
                     pass
+            self.create_menu_bar()
             self.create_tabs()
-            user = getattr(config.Config, 'CURRENT_USER', None)
-            role = getattr(config.Config, 'CURRENT_USER_ROLE', None)
-            if user:
-                self.update_status(f"Logged in as {user} ({role})")
-            else:
-                self.update_status(f"Role: {role}")
+            self._update_session_status()
         except Exception:
             pass
+
+    def _update_session_status(self):
+        user = config.Config.CURRENT_USER
+        role = config.Config.CURRENT_USER_ROLE
+        if user:
+            self.update_status(f"Logged in as {user} ({role})")
+        elif role:
+            self.update_status("Ready")
+        else:
+            self.update_status("Not logged in - use File > Login (Ctrl+I)")
 
     def apply_preferences(self):
         """Apply preferences changed at runtime without restart"""
@@ -289,82 +304,133 @@ class MainWindow:
             pass
 
     def show_login(self):
-        """Show the login dialog and create tabs based on selected user."""
+        """Show the login dialog (modal).
+
+        A successful login fires <<UserRoleChanged>>, which rebuilds menus and
+        tabs for the new role; a cancelled login changes nothing.
+        """
+        if not config.Config.login_required():
+            return
         from UI.dialogs import LoginDialog
-        dialog = LoginDialog(self.root)
-        dialog.show()
-        # If user selected a username, dialog sets Config.CURRENT_USER and role.
-        # Ensure tabs are created (use current role from config)
-        try:
-            # Remove any existing notebook (if present)
-            if hasattr(self, 'notebook'):
-                try:
-                    self.notebook.destroy()
-                except Exception:
-                    pass
-            self.create_tabs()
-            # Update status to indicate logged-in user
-            user = getattr(config.Config, 'CURRENT_USER', None)
-            role = getattr(config.Config, 'CURRENT_USER_ROLE', None)
-            if user:
-                self.update_status(f"Logged in as {user} ({role})")
-            else:
-                self.update_status(f"Role: {role}")
-        except Exception:
-            self.create_tabs()
+        LoginDialog(self.root).show()
     
     def create_tabs(self):
-        """Create main tabs for different sections"""
+        """Create the notebook with one page per tab the current role may see.
+
+        Only the first page is built now; every other tab is built the first
+        time it is opened, so logging in shows the window without waiting for
+        all seven tabs to load their data.
+        """
         self.notebook = ttk.Notebook(self.main_container)
         self.notebook.pack(fill='both', expand=True)
-        
-        # Dictionary to hold tab instances
-        self.tabs = {}
-        
-        # Import and create tab instances
-        try:
+        self.tabs = {}     # tab name -> built tab instance
+        self._pages = {}   # tab name -> page frame in the notebook (content built lazily)
+        self._skip_refresh = None
+
+        for name, feature in self.TAB_FEATURES.items():
+            if not config.Config.has_permission(feature):
+                continue
+            page = ttk.Frame(self.notebook)
+            self._pages[name] = page
+            self.notebook.add(page, text=name)
+            var = self.tab_vars.get(name)
+            if var is not None and not var.get():
+                self.notebook.hide(page)
+
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_change)
+
+        visible = [n for n, p in self._pages.items() if self.notebook.tab(p, 'state') != 'hidden']
+        if visible:
+            self.notebook.select(self._pages[visible[0]])
+            self._build_tab(visible[0])
+            self._skip_refresh = visible[0]   # just loaded; the selection event needn't reload it
+
+    @staticmethod
+    def _tab_class(name):
+        # Explicit imports (not importlib) so PyInstaller bundles every tab module.
+        if name == 'Dashboard':
             from UI.dashboard import DashboardTab
+            return DashboardTab
+        if name == 'Students':
             from UI.students import StudentsTab
+            return StudentsTab
+        if name == 'Teachers':
             from UI.teachers import TeachersTab
+            return TeachersTab
+        if name == 'Finance':
             from UI.finance import FinanceTab
+            return FinanceTab
+        if name == 'Inventory':
             from UI.inventory import InventoryTab
+            return InventoryTab
+        if name == 'Attendance':
             from UI.attendance import AttendanceTab
+            return AttendanceTab
+        if name == 'Reports':
             from UI.reports import ReportsTab
-            # Create tab instances based on View menu state or permissions
-            def should_create(feature_name, tab_name):
-                try:
-                    # If the View checkbox is checked, create the tab.
-                    return bool(self.tab_vars.get(tab_name, tk.BooleanVar(value=True)).get()) or config.Config.has_permission(feature_name)
-                except Exception:
-                    return config.Config.has_permission(feature_name)
+            return ReportsTab
+        raise KeyError(name)
 
-            if should_create('dashboard', 'Dashboard'):
-                self.tabs['Dashboard'] = DashboardTab(self.notebook, role=getattr(config.Config, 'CURRENT_USER_ROLE', ''))
-            if should_create('students', 'Students'):
-                self.tabs['Students'] = StudentsTab(self.notebook)
-            if should_create('teachers', 'Teachers'):
-                self.tabs['Teachers'] = TeachersTab(self.notebook)
-            if should_create('finance', 'Finance'):
-                self.tabs['Finance'] = FinanceTab(self.notebook)
-            if should_create('inventory', 'Inventory'):
-                self.tabs['Inventory'] = InventoryTab(self.notebook)
-            if should_create('attendance', 'Attendance'):
-                self.tabs['Attendance'] = AttendanceTab(self.notebook)
-            if should_create('reports', 'Reports'):
-                self.tabs['Reports'] = ReportsTab(self.notebook)
+    def _build_tab(self, name):
+        """Build a tab's content inside its page (once). Returns (tab, newly_built)."""
+        if name in self.tabs:
+            return self.tabs[name], False
+        page = self._pages[name]
+        self.root.config(cursor='watch')
+        self.root.update_idletasks()
+        try:
+            TabClass = self._tab_class(name)
+            if name == 'Dashboard':
+                tab = TabClass(page, role=getattr(config.Config, 'CURRENT_USER_ROLE', ''))
+            else:
+                tab = TabClass(page)
+            tab.frame.pack(fill='both', expand=True)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("Could not open the %s tab", name)
+            ttk.Label(page, text=f"The {name} tab could not be opened:\n{e}", padding=20).pack()
+            tab = None
+        finally:
+            self.root.config(cursor='')
+        if tab is not None:
+            self.tabs[name] = tab
+        return tab, True
 
-            # Add tabs to notebook
-            for name, tab in self.tabs.items():
-                self.notebook.add(tab.frame, text=name)
+    def _selected_tab_name(self):
+        try:
+            selected = self.notebook.select()
+        except tk.TclError:
+            return None
+        return next((n for n, p in self._pages.items() if str(p) == str(selected)), None)
 
-            # Bind tab change event
-            self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_change)
+    def on_tab_change(self, event):
+        """Build a tab the first time it is opened; refresh it on later visits."""
+        name = self._selected_tab_name()
+        if not name:
+            return
+        self.update_status(f"Viewing {name} tab")
+        tab, newly_built = self._build_tab(name)
+        if self._skip_refresh == name:
+            self._skip_refresh = None
+            return
+        if tab is not None and not newly_built and hasattr(tab, 'refresh_data'):
+            tab.refresh_data()
 
-        except ImportError as e:
-            messagebox.showerror("Import Error",
-                                 f"Failed to load UI components:\n{str(e)}\n\n"
-                                 "Please check that all modules are installed.")
-    
+    def toggle_tab(self, tab_name):
+        """Show or hide a tab from the View menu (only tabs the current role may see)."""
+        feature = self.TAB_FEATURES.get(tab_name)
+        if feature and not config.Config.has_permission(feature):
+            self.tab_vars[tab_name].set(False)
+            self._require(feature)
+            return
+        page = self._pages.get(tab_name)
+        if page is None:
+            return
+        if self.tab_vars[tab_name].get():
+            self.notebook.add(page)      # re-adding a hidden page restores it in place
+        else:
+            self.notebook.hide(page)
+
     def create_status_bar(self):
         """Create status bar at bottom of window"""
         self.status_bar = ttk.Frame(self.root)
@@ -403,193 +469,111 @@ class MainWindow:
         self.root.after(60000, self.update_timestamp)  # Update every minute
     
     def update_database_status(self):
-        """Update database connection status"""
+        """Show whether the school data can be reached (one label, updated in place)."""
+        local = config.Config.DB_BACKEND == 'sqlite'
         if db.test_connection():
-            status_text = "Database: Connected ✓"
+            status_text = "Data: saved on this computer ✓" if local else "Database: Connected ✓"
             status_color = 'green'
         else:
-            status_text = "Database: Disconnected ✗"
+            status_text = "Data: cannot be opened ✗" if local else "Database: Disconnected ✗"
             status_color = 'red'
-        
-        self.db_status_label = ttk.Label(
-            self.status_bar,
-            text=status_text,
-            relief='sunken',
-            foreground=status_color,
-            padding=(5, 2)
-        )
-        self.db_status_label.pack(side='right', padx=(0, 10))
+
+        if getattr(self, 'db_status_label', None) is None:
+            self.db_status_label = ttk.Label(self.status_bar, relief='sunken', padding=(5, 2))
+            self.db_status_label.pack(side='right', padx=(0, 10))
+        self.db_status_label.configure(text=status_text, foreground=status_color)
     
     def update_status(self, message: str):
         """Update status bar message"""
         self.status_label.config(text=message)
         self.root.update_idletasks()
     
-    def on_tab_change(self, event):
-        """Handle tab change event"""
-        selected_tab = self.notebook.index(self.notebook.select())
-        tab_names = list(self.tabs.keys())
-        
-        if 0 <= selected_tab < len(tab_names):
-            tab_name = tab_names[selected_tab]
-            self.update_status(f"Viewing {tab_name} tab")
-            
-            # Refresh tab data if needed
-            if hasattr(self.tabs[tab_name], 'refresh_data'):
-                self.tabs[tab_name].refresh_data()
-    
-    def toggle_tab(self, tab_name):
-        """Toggle tab visibility"""
-        try:
-            # If toggling on and tab not created yet, try to create it
-            is_on = bool(self.tab_vars.get(tab_name, tk.BooleanVar(value=True)).get())
-            if is_on and tab_name not in self.tabs:
-                try:
-                    self._create_tab_by_name(tab_name)
-                except Exception:
-                    pass
-
-            if tab_name in self.tabs:
-                try:
-                    tab_index = list(self.tabs.keys()).index(tab_name)
-                except ValueError:
-                    tab_index = None
-
-                if self.tab_vars[tab_name].get():
-                    # Show tab (add if missing)
-                    if tab_index is None:
-                        try:
-                            self.notebook.add(self.tabs[tab_name].frame, text=tab_name)
-                        except Exception:
-                            pass
-                else:
-                    # Hide tab if present
-                    if tab_index is not None:
-                        try:
-                            self.notebook.forget(tab_index)
-                        except Exception:
-                            pass
-        except:
-            pass
-
-    def _create_tab_by_name(self, tab_name: str):
-        """Create a single tab instance by name and add to notebook and `self.tabs`."""
-        mapping = {
-            'Dashboard': ('UI.dashboard', 'DashboardTab'),
-            'Students': ('UI.students', 'StudentsTab'),
-            'Teachers': ('UI.teachers', 'TeachersTab'),
-            'Finance': ('UI.finance', 'FinanceTab'),
-            'Inventory': ('UI.inventory', 'InventoryTab'),
-            'Attendance': ('UI.attendance', 'AttendanceTab'),
-            'Reports': ('UI.reports', 'ReportsTab')
-        }
-        if tab_name not in mapping:
-            return
-        module_name, class_name = mapping[tab_name]
-        mod = __import__(module_name, fromlist=[class_name])
-        TabClass = getattr(mod, class_name)
-        if tab_name == 'Dashboard':
-            inst = TabClass(self.notebook, role=getattr(config.Config, 'CURRENT_USER_ROLE', ''))
+    def _require(self, feature: str) -> bool:
+        """Return True if the current role may use `feature`, else explain why not."""
+        if config.Config.has_permission(feature):
+            return True
+        if not config.Config.CURRENT_USER and config.Config.login_required():
+            messagebox.showwarning("Login Required", "Please log in first (File > Login).")
         else:
-            inst = TabClass(self.notebook)
-        self.tabs[tab_name] = inst
-        try:
-            self.notebook.add(inst.frame, text=tab_name)
-        except Exception:
-            pass
-    
+            messagebox.showwarning("Access Denied",
+                                   "Your role does not have access to this feature.")
+        return False
+
     # Menu command implementations
     
     def backup_database(self):
-        """Backup database functionality"""
-        from utils.export_import import backup_database
-        try:
-            backup_file = config.Config.get_backup_filename()
-            if backup_database(backup_file):
-                messagebox.showinfo("Success", 
-                                   f"Database backup created successfully:\n{backup_file}")
-                self.update_status("Database backup completed")
-            else:
-                messagebox.showerror("Error", "Failed to create database backup")
-        except Exception as e:
-            messagebox.showerror("Error", f"Backup failed: {str(e)}")
-    
+        """Save a full copy of the school data."""
+        if not self._require('settings'):
+            return
+        from utils.export_import import backup_database, backup_extension
+        from datetime import datetime
+        backup_file = config.Config.PATHS['backups'] / f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{backup_extension()}"
+        if backup_database(str(backup_file)):
+            messagebox.showinfo("Backup Complete", f"A backup of your data was saved to:\n{backup_file}")
+            self.update_status("Backup completed")
+        else:
+            messagebox.showerror("Backup Failed",
+                                 "The backup could not be created. See the log file for details.")
+
     def restore_database(self):
-        """Restore database from backup"""
+        """Replace the current data with a previously saved backup."""
+        if not self._require('settings'):
+            return
         from tkinter import filedialog
-        from utils.export_import import restore_database
-        
+        from utils.export_import import restore_database, backup_extension
+
+        ext = backup_extension()
+        label = "School data backups" if ext == ".db" else "SQL backups"
         backup_file = filedialog.askopenfilename(
-            title="Select Backup File",
-            filetypes=[("SQL files", "*.sql"), ("All files", "*.*")],
+            title="Choose a backup to restore",
+            filetypes=[(label, f"*{ext}"), ("All files", "*.*")],
             initialdir=str(config.Config.PATHS['backups'])
         )
-        
-        if backup_file:
-            response = messagebox.askyesno("Confirm Restore",
-                                          "This will overwrite current database.\n"
-                                          "Are you sure you want to continue?")
-            if response:
-                try:
-                    if restore_database(backup_file):
-                        messagebox.showinfo("Success", "Database restored successfully")
-                        self.update_status("Database restored")
-                        self.refresh_all()
-                    else:
-                        messagebox.showerror("Error", "Failed to restore database")
-                except Exception as e:
-                    messagebox.showerror("Error", f"Restore failed: {str(e)}")
-    
+        if not backup_file:
+            return
+        if not messagebox.askyesno("Confirm Restore",
+                                   "All current data will be replaced by the selected backup.\n\n"
+                                   "Continue?"):
+            return
+        ok, message = restore_database(backup_file)
+        if ok:
+            messagebox.showinfo("Restore Complete", message)
+            self.update_status("Data restored from backup")
+            self.on_user_role_changed()   # rebuild every tab from the restored data
+        else:
+            messagebox.showerror("Restore Failed", message)
+
     def export_data(self):
-        """Export data to Excel"""
+        """Export every table to CSV files (opens in Excel)."""
+        if not self._require('settings'):
+            return
         from utils.export_import import export_all_data
-        
-        try:
-            export_file = config.Config.get_export_filename("all_data")
-            if export_all_data(export_file):
-                messagebox.showinfo("Success",
-                                  f"Data exported successfully:\n{export_file}")
-                self.update_status("Data exported to Excel")
-            else:
-                messagebox.showerror("Error", "Failed to export data")
-        except Exception as e:
-            messagebox.showerror("Error", f"Export failed: {str(e)}")
-    
+        folder = export_all_data()
+        if folder:
+            messagebox.showinfo("Export Complete", f"All data was exported as CSV files to:\n{folder}")
+            self.update_status("Data exported")
+        else:
+            messagebox.showerror("Export Failed", "The data could not be exported. See the log file for details.")
+
     def import_data(self):
-        """Import data from Excel"""
-        from tkinter import filedialog
+        """Bulk import (not available yet)."""
+        if not self._require('settings'):
+            return
         from utils.export_import import import_from_excel
-        
-        import_file = filedialog.askopenfilename(
-            title="Select Import File",
-            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
-            initialdir=str(config.Config.PATHS['exports'])
-        )
-        
-        if import_file:
-            response = messagebox.askyesno("Confirm Import",
-                                          "This will import data from Excel file.\n"
-                                          "Are you sure you want to continue?")
-            if response:
-                try:
-                    success, message = import_from_excel(import_file)
-                    if success:
-                        messagebox.showinfo("Success", message)
-                        self.update_status("Data imported from Excel")
-                        self.refresh_all()
-                    else:
-                        messagebox.showerror("Error", message)
-                except Exception as e:
-                    messagebox.showerror("Error", f"Import failed: {str(e)}")
-    
+        _, message = import_from_excel(None)
+        messagebox.showinfo("Import", message)
+
     def print_data(self):
-        """Print current tab data"""
-        current_tab = self.notebook.tab(self.notebook.select(), "text")
-        self.update_status(f"Printing {current_tab} data...")
-        messagebox.showinfo("Print", f"Printing {current_tab} data")
+        """Direct printing is not implemented; point users to the PDF reports."""
+        messagebox.showinfo("Print",
+                            "Direct printing is not available.\n\n"
+                            "Generate a PDF from the Reports menu (or a tab's report/export "
+                            "button) and print it from your PDF viewer.")
     
     def open_preferences(self):
         """Open preferences dialog"""
+        if not self._require('settings'):
+            return
         from UI.dialogs import PreferencesDialog
         dialog = PreferencesDialog(self.root)
         dialog.show()
@@ -597,6 +581,8 @@ class MainWindow:
 
     def open_user_manager(self):
         """Open the user manager dialog to add/edit/remove users and roles."""
+        if not self._require('manage_users'):
+            return
         try:
             from UI.dialogs import UsersDialog
             dialog = UsersDialog(self.root)
@@ -641,37 +627,37 @@ class MainWindow:
     
     def database_maintenance(self):
         """Run database maintenance"""
+        if not self._require('settings'):
+            return
         from utils.helpers import run_database_maintenance
         
         response = messagebox.askyesno("Database Maintenance",
-                                      "Run database maintenance tasks?\n"
-                                      "This may take a few moments.")
+                                      "Check the database and tidy it up?\n"
+                                      "No records are changed or deleted.")
         if response:
-            try:
-                run_database_maintenance()
-                messagebox.showinfo("Success", "Database maintenance completed")
-                self.update_status("Database maintenance completed")
-            except Exception as e:
-                messagebox.showerror("Error", f"Maintenance failed: {str(e)}")
-    
+            ok, message = run_database_maintenance()
+            (messagebox.showinfo if ok else messagebox.showerror)("Database Maintenance", message)
+            self.update_status("Database maintenance completed" if ok else "Database maintenance failed")
+
     def recalculate_balances(self):
         """Recalculate all student balances"""
-        from models.finance import FinancialManager
-        
+        if not self._require('finance'):
+            return
         response = messagebox.askyesno("Recalculate Balances",
                                       "Recalculate all student balances?\n"
                                       "This may take a few moments.")
         if response:
             try:
-                # This would involve recalculating balances in the database
-                # For now, just refresh the finance tab
-                if 'Finance' in self.tabs:
-                    self.tabs['Finance'].refresh_data()
-                
-                messagebox.showinfo("Success", "Balances recalculated")
-                self.update_status("Student balances recalculated")
+                # Balances are not stored; FinancialManager derives them from fee
+                # and payment rows on every read, so "recalculating" means
+                # reloading the views that display them.
+                self.refresh_all()
+                messagebox.showinfo("Balances Refreshed",
+                                    "Balances are calculated live from fees and payments.\n"
+                                    "All views have been reloaded with current figures.")
+                self.update_status("Student balances refreshed")
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to recalculate: {str(e)}")
+                messagebox.showerror("Error", f"Failed to refresh balances: {str(e)}")
     
     def send_notifications(self):
         """Send notifications to parents"""
@@ -688,91 +674,67 @@ class MainWindow:
         messagebox.showinfo("Notifications", "Notification system is not configured.\n"
                             "You can manage notifications from the Reports/Tools menu when available.")
     
+    def _run_report(self, feature: str, label: str, prefix: str, generator, **kwargs):
+        """Permission-check, generate a dated PDF in the reports folder, and report the outcome."""
+        if not self._require(feature):
+            return
+        from datetime import date
+        reports_dir = config.Config.PATHS['reports']
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        fname = reports_dir / f"{prefix}_{date.today().strftime('%Y%m%d')}.pdf"
+        try:
+            generator(str(fname), **kwargs)
+        except Exception as e:
+            messagebox.showerror("Report Failed", f"Could not generate the {label}:\n{e}")
+            self.update_status(f"{label} failed")
+            return
+        self.update_status(f"{label} generated")
+        messagebox.showinfo("Report Generated", f"{label} saved to:\n{fname}")
+
     def generate_student_list(self):
-        """Generate student list report"""
         from reports.generators.student_reports import generate_student_list_report
-        from datetime import date
-        import config
-        reports_dir = config.Config.PATHS.get('reports')
-        fname = reports_dir / f"student_list_{date.today().strftime('%Y%m%d')}.pdf"
-        generate_student_list_report(str(fname))
-        self.update_status("Student list report generated")
-    
-    def generate_student_fees_report(self):
-        """Generate student fees report"""
-        from reports.generators.financial_reports import generate_student_fees_report
-        from datetime import date
-        import config
-        reports_dir = config.Config.PATHS.get('reports')
-        fname = reports_dir / f"student_fees_{date.today().strftime('%Y%m%d')}.pdf"
-        generate_student_fees_report(str(fname))
-        self.update_status("Student fees report generated")
-    
+        self._run_report('students', "Student list", "student_list", generate_student_list_report)
+
     def generate_attendance_report(self):
-        """Generate attendance report"""
         from reports.generators.student_reports import generate_attendance_summary_report
-        from datetime import date
-        import config
-        reports_dir = config.Config.PATHS.get('reports')
-        fname = reports_dir / f"attendance_summary_{date.today().strftime('%Y%m%d')}.pdf"
-        generate_attendance_summary_report(str(fname))
-        self.update_status("Attendance report generated")
-    
+        self._run_report('attendance', "Attendance report", "attendance_summary",
+                         generate_attendance_summary_report)
+
+    def generate_student_fees_report(self):
+        from reports.generators.financial_reports import generate_student_fees_report
+        self._run_report('financial_reports', "Student fees report", "student_fees",
+                         generate_student_fees_report)
+
     def generate_fee_collection_report(self):
-        """Generate fee collection report"""
         from reports.generators.financial_reports import generate_fee_collection_report
-        from datetime import date
-        import config
-        reports_dir = config.Config.PATHS.get('reports')
-        fname = reports_dir / f"fee_collection_{date.today().strftime('%Y%m%d')}.pdf"
-        generate_fee_collection_report(str(fname))
-        self.update_status("Fee collection report generated")
-    
+        self._run_report('financial_reports', "Fee collection report", "fee_collection",
+                         generate_fee_collection_report)
+
     def generate_expense_report(self):
-        """Generate expense report"""
         from reports.generators.financial_reports import generate_expense_report
-        from datetime import date
-        import config
-        reports_dir = config.Config.PATHS.get('reports')
-        fname = reports_dir / f"expense_{date.today().strftime('%Y%m%d')}.pdf"
-        generate_expense_report(str(fname))
-        self.update_status("Expense report generated")
-    
+        safe_term = str(config.Config.CURRENT_TERM).replace(' ', '_')
+        self._run_report('financial_reports', "Expense report", f"expense_{safe_term}",
+                         generate_expense_report,
+                         academic_year=config.Config.CURRENT_ACADEMIC_YEAR,
+                         term=config.Config.CURRENT_TERM)
+
     def generate_financial_summary(self):
-        """Generate financial summary report"""
         from reports.generators.financial_reports import generate_financial_summary_report
-        from datetime import date
-        import config
-        reports_dir = config.Config.PATHS.get('reports')
-        fname = reports_dir / f"financial_summary_{date.today().strftime('%Y%m%d')}.pdf"
-        generate_financial_summary_report(str(fname))
-        self.update_status("Financial summary generated")
-    
+        self._run_report('financial_reports', "Financial summary", "financial_summary",
+                         generate_financial_summary_report)
+
     def generate_inventory_list(self):
-        """Generate inventory list report"""
         from reports.generators.inventory_reports import generate_inventory_list_report
-        from datetime import date
-        import config
-        reports_dir = config.Config.PATHS.get('reports')
-        fname = reports_dir / f"inventory_list_{date.today().strftime('%Y%m%d')}.pdf"
-        generate_inventory_list_report(str(fname))
-        self.update_status("Inventory list report generated")
-    
+        self._run_report('inventory', "Inventory list", "inventory_list", generate_inventory_list_report)
+
     def generate_low_stock_report(self):
-        """Generate low stock report"""
         from reports.generators.inventory_reports import generate_low_stock_report
-        from datetime import date
-        import config
-        reports_dir = config.Config.PATHS.get('reports')
-        fname = reports_dir / f"low_stock_{date.today().strftime('%Y%m%d')}.pdf"
-        generate_low_stock_report(str(fname))
-        self.update_status("Low stock report generated")
+        self._run_report('inventory', "Low stock report", "low_stock", generate_low_stock_report)
     
     def open_manual(self):
         """Open user manual"""
         manual_path = config.Config.RESOURCE_DIR / "docs" / "user_manual.pdf"
         if manual_path.exists():
-            import os
             os.startfile(str(manual_path))
             self.update_status("Opening user manual...")
         else:
@@ -780,40 +742,20 @@ class MainWindow:
     
     def show_shortcuts(self):
         """Show keyboard shortcuts"""
-        shortcuts = """
-        Keyboard Shortcuts:
-        
-        General:
-        Ctrl+B    - Backup database
-        Ctrl+P    - Print current view
-        Ctrl+Q    - Exit application
-        F5        - Refresh all data
-        
-        Navigation:
-        Ctrl+1    - Dashboard
-        Ctrl+2    - Students
-        Ctrl+3    - Teachers
-        Ctrl+4    - Finance
-        Ctrl+5    - Inventory
-        Ctrl+6    - Attendance
-        Ctrl+7    - Reports
-        
-        Data Entry:
-        Ctrl+N    - New record (in current tab)
-        Ctrl+S    - Save record
-        Ctrl+F    - Find/Search
-        Delete    - Delete selected record
-        """
-        
-        messagebox.showinfo("Keyboard Shortcuts", shortcuts)
+        # Keep in sync with the bindings in create_menu_bar().
+        lines = ["Keyboard Shortcuts:", ""]
+        if config.Config.login_required():
+            lines += ["Ctrl+I    - Login", "Ctrl+L    - Logout"]
+        lines += ["Ctrl+U    - Manage users", "Ctrl+B    - Backup database", "Ctrl+P    - Print current view",
+                  "Ctrl+Q    - Exit application", "F5        - Refresh all data"]
+        messagebox.showinfo("Keyboard Shortcuts", "\n".join(lines))
     
     def check_for_updates(self):
         """Check for application updates"""
-        self.update_status("Checking for updates...")
-        messagebox.showinfo("Updates", 
-                           f"You are running {config.Config.APP_NAME} v{config.Config.VERSION}\n\n"
-                           "This is the latest version.")
-        self.update_status("Ready")
+        messagebox.showinfo("Updates",
+                           f"You are running {config.Config.APP_NAME} v{config.Config.VERSION}.\n\n"
+                           "Automatic update checks are not available. "
+                           "Contact your system administrator for new releases.")
     
     def show_about(self):
         """Show about dialog"""

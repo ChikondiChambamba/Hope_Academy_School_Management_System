@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 import config
 from database.connection import db
 from database.queries import Queries
+from models.student import Student
 
 @dataclass
 class Attendance:
@@ -150,8 +151,9 @@ class Attendance:
     
     @classmethod
     def from_dict(cls, data: Dict) -> 'Attendance':
-        """Create Attendance instance from dictionary"""
-        return cls(**data)
+        """Create Attendance instance from a row (joined student columns are mapped)."""
+        from .row_mapping import from_row
+        return from_row(cls, data)
     
     @classmethod
     def get_by_date(cls, attendance_date: date) -> List['Attendance']:

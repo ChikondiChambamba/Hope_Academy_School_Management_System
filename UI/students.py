@@ -19,7 +19,7 @@ class StudentsTab:
     
     def setup_ui(self):
         """Setup students tab UI"""
-        role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
+        show_finance = config.Config.has_permission('student_finance')
         # Main container
         main_container = ttk.Frame(self.frame)
         main_container.pack(fill='both', expand=True, padx=10, pady=10)
@@ -98,8 +98,8 @@ class StudentsTab:
         )
         self.fee_button.pack(side='left', padx=5)
 
-        # If role is Headteacher, disable fee actions
-        if role == 'Headteacher':
+        # Roles without student-finance access cannot record fees
+        if not show_finance:
             try:
                 self.fee_button.state(['disabled'])
             except Exception:
@@ -179,10 +179,10 @@ class StudentsTab:
         self.students_frame = ttk.Frame(notebook)
         notebook.add(self.students_frame, text="Student List")
         self.setup_students_list()
-        # Fee Balances Tab: hide for Headteacher role
-        role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
+        # Fee Balances Tab: only for roles with student-finance access
+        show_finance = config.Config.has_permission('student_finance')
         self.balances_frame = ttk.Frame(notebook)
-        if role != 'Headteacher':
+        if show_finance:
             notebook.add(self.balances_frame, text="Fee Balances")
             self.setup_fee_balances()
         else:
@@ -199,10 +199,10 @@ class StudentsTab:
         tree_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
         # Define columns
-        role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
+        show_finance = config.Config.has_permission('student_finance')
         columns = ['ID', 'Code', 'First Name', 'Last Name', 'Class', 'Parent', 'Phone', 'Enrollment Date', 'Status']
-        # Show financial Balance column to roles other than Headteacher
-        if role != 'Headteacher':
+        # Show the financial Balance column only to roles allowed to see student finance
+        if show_finance:
             # insert Balance before Status
             columns.insert(-1, 'Balance')
         columns = tuple(columns)
@@ -380,14 +380,13 @@ class StudentsTab:
                 balance = student.balance
                 
                 # Color coding for balance
-                from utils.helpers import format_currency
                 if balance > 0:
                     balance_display = f"{format_currency(balance)} ✗"
                 else:
                     balance_display = f"{format_currency(abs(balance))} ✓"
                 # Build values respecting whether Balance column is present
-                role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
-                if role != 'Headteacher':
+                show_finance = config.Config.has_permission('student_finance')
+                if show_finance:
                     values = (
                         student.student_id,
                         student.student_code,
@@ -447,7 +446,7 @@ class StudentsTab:
                 student_code = bal['student_code']
                 student_name = bal['student_name']
                 class_name = bal['class']
-                total_due = float(bal['total_due']) + float(bal.get('carried_balance') or 0)
+                total_due = float(bal.get('opening_balance') or 0)
                 total_paid = float(bal['total_paid'])
                 balance = float(bal['balance'])
                 
@@ -505,8 +504,8 @@ class StudentsTab:
                 status = "Active" if student.is_active else "Inactive"
                 balance = student.balance
                 balance_display = f"{format_currency(balance)} ✗" if balance > 0 else f"{format_currency(abs(balance))} ✓"
-                role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
-                if role != 'Headteacher':
+                show_finance = config.Config.has_permission('student_finance')
+                if show_finance:
                     values = (
                         student.student_id,
                         student.student_code,
@@ -563,8 +562,8 @@ class StudentsTab:
                 status = "Active" if student.is_active else "Inactive"
                 balance = student.balance
                 balance_display = f"{format_currency(balance)} ✗" if balance > 0 else f"{format_currency(abs(balance))} ✓"
-                role = getattr(config.Config, 'CURRENT_USER_ROLE', 'Administrator')
-                if role != 'Headteacher':
+                show_finance = config.Config.has_permission('student_finance')
+                if show_finance:
                     values = (
                         student.student_id,
                         student.student_code,

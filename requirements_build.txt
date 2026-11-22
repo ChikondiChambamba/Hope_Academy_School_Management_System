@@ -1,13 +1,8 @@
-# Build dependencies
-pyinstaller==5.13.2
-pyinstaller-hooks-contrib==2023.10
-upx==4.0.2  # Download from https://upx.github.io
+# Build-time dependencies (install on top of requirements.txt)
+-r requirements.txt
+pyinstaller==6.17.0
+pyinstaller-hooks-contrib==2025.11
 
-# For creating icons
-Pillow==10.0.0
-
-# For testing installer
-innoextract==1.9  # For extracting InnoSetup installers for testing
-
-# Optional: For creating custom icons
-pywin32==306  # Windows API access
+# Not pip-installable - install separately if you need them:
+#   UPX (optional exe compression): https://upx.github.io
+#   Inno Setup (installer, school_managemt_setup.iss): https://jrsoftware.org/isinfo.php

@@ -16,6 +16,11 @@ class FinanceTab:
         
     def setup_ui(self):
         """Setup finance tab UI"""
+        self._finance_view_loading = False
+        self.finance_view_year_var = tk.StringVar(value=config.Config.CURRENT_ACADEMIC_YEAR)
+        self.finance_view_term_var = tk.StringVar(value=config.Config.CURRENT_TERM)
+        self.finance_view_term_var.trace_add('write', lambda *_: self.on_finance_view_changed())
+
         # Create notebook for different finance sections
         self.notebook = ttk.Notebook(self.frame)
         self.notebook.pack(fill='both', expand=True, padx=10, pady=10)
@@ -46,6 +51,54 @@ class FinanceTab:
         self.setup_financial_summary_tab()
         self.setup_staff_salaries_tab()
         self.setup_manage_types_tab()
+
+    def _current_finance_view(self):
+        """Return the selected academic year and term for finance views."""
+        year = (self.finance_view_year_var.get() or config.Config.CURRENT_ACADEMIC_YEAR).strip()
+        term = (self.finance_view_term_var.get() or config.Config.CURRENT_TERM).strip()
+        return year, term
+
+    def _sync_finance_view_headers(self):
+        """Refresh term header labels in finance pages."""
+        year, term = self._current_finance_view()
+        start_date, end_date = config.Config.get_term_date_range(term)
+        if start_date and end_date:
+            label = f"Viewing {year} | {term} | {start_date} to {end_date}"
+        else:
+            label = f"Viewing {year} | {term}"
+        if hasattr(self, 'expenses_term_info_var'):
+            self.expenses_term_info_var.set(label)
+        if hasattr(self, 'summary_term_info_var'):
+            self.summary_term_info_var.set(label)
+
+    def _step_finance_term(self, offset: int):
+        """Move finance views backward or forward across configured terms."""
+        terms = list(getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3'])) or ['Term 1', 'Term 2', 'Term 3']
+        current = self.finance_view_term_var.get() or config.Config.CURRENT_TERM
+        if current not in terms:
+            current = terms[0]
+        index = terms.index(current)
+        self.finance_view_term_var.set(terms[(index + offset) % len(terms)])
+
+    def reset_finance_view(self):
+        """Reset finance pages to the active configured term."""
+        self._finance_view_loading = True
+        try:
+            self.finance_view_year_var.set(config.Config.CURRENT_ACADEMIC_YEAR)
+            self.finance_view_term_var.set(config.Config.CURRENT_TERM)
+        finally:
+            self._finance_view_loading = False
+        self._sync_finance_view_headers()
+
+    def on_finance_view_changed(self, event=None):
+        """Refresh term-aware finance pages when the selected term changes."""
+        if getattr(self, '_finance_view_loading', False):
+            return
+        self._sync_finance_view_headers()
+        if hasattr(self, 'expenses_tree'):
+            self.load_recent_expenses()
+        if hasattr(self, 'total_income_var'):
+            self.load_financial_summary()
     
     def setup_fee_payments_tab(self):
         """Setup fee payments tab"""
@@ -263,21 +316,20 @@ class FinanceTab:
         header.pack(fill='x', padx=10, pady=10)
 
         ttk.Label(header, text="Current Term:").grid(row=0, column=0, sticky='w', padx=4, pady=4)
-        self.rollover_current_term_var = tk.StringVar(value=config.Config.CURRENT_TERM)
+        self.rollover_current_term_var = tk.StringVar()
         ttk.Label(header, textvariable=self.rollover_current_term_var, font=('Arial', 11, 'bold')).grid(row=0, column=1, sticky='w', padx=4, pady=4)
 
+        # The next period is derived, never chosen: after the last term the
+        # academic year moves forward (see FinancialManager._resolve_rollover_target).
         ttk.Label(header, text="Next Term:").grid(row=0, column=2, sticky='w', padx=(20, 4), pady=4)
         self.rollover_next_term_var = tk.StringVar()
-        ttk.Combobox(
-            header,
-            textvariable=self.rollover_next_term_var,
-            values=getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3']),
-            width=16,
-            state='readonly'
-        ).grid(row=0, column=3, sticky='w', padx=4, pady=4)
+        self.rollover_next_year_var = tk.StringVar()
+        self.rollover_next_period_var = tk.StringVar()
+        ttk.Label(header, textvariable=self.rollover_next_period_var, font=('Arial', 11, 'bold')).grid(row=0, column=3, sticky='w', padx=4, pady=4)
 
-        ttk.Label(header, text="Term Start Date:").grid(row=0, column=4, sticky='w', padx=(20, 4), pady=4)
-        self.rollover_start_date_var = tk.StringVar(value=(getattr(config.Config, 'TERM_START_DATE', '') or date.today().strftime('%Y-%m-%d')))
+        ttk.Label(header, text="New Term Start Date:").grid(row=0, column=4, sticky='w', padx=(20, 4), pady=4)
+        # Left blank on purpose: the new term's start must come after the closing term ends.
+        self.rollover_start_date_var = tk.StringVar(value='')
         ttk.Entry(header, textvariable=self.rollover_start_date_var, width=16).grid(row=0, column=5, sticky='w', padx=4, pady=4)
 
         ttk.Label(header, text="Class Filter:").grid(row=1, column=0, sticky='w', padx=4, pady=4)
@@ -297,7 +349,7 @@ class FinanceTab:
         status_combo = ttk.Combobox(
             header,
             textvariable=self.rollover_status_var,
-            values=['All', 'Paid', 'Partial', 'Unpaid', 'Carried Forward', 'Reset'],
+            values=['All', 'Paid', 'Partial', 'Unpaid', 'Carried Forward', 'Credit', 'Reset'],
             width=16,
             state='readonly'
         )
@@ -309,6 +361,8 @@ class FinanceTab:
         ttk.Button(button_row, text="Preview Rollover", command=self.preview_term_rollover).pack(side='left', padx=4)
         ttk.Button(button_row, text="Execute Rollover", command=self.execute_term_rollover).pack(side='left', padx=4)
         ttk.Button(button_row, text="Refresh", command=self.load_term_rollover_data).pack(side='left', padx=4)
+        ttk.Button(button_row, text="Toggle Carry for Selected", command=self.toggle_selected_rollover_carry).pack(side='left', padx=4)
+        ttk.Button(button_row, text="Include All Carry", command=self.include_all_rollover_carry).pack(side='left', padx=4)
         ttk.Button(button_row, text="View Selected Details", command=self.show_rollover_item_details).pack(side='left', padx=4)
 
         summary = ttk.Frame(self.term_rollover_frame)
@@ -317,6 +371,7 @@ class FinanceTab:
             ('Students', 'rollover_total_students_var'),
             ('Reset', 'rollover_reset_students_var'),
             ('Carry Forward', 'rollover_carry_students_var'),
+            ('Credit Forward', 'rollover_credit_total_var'),
             ('Prev Outstanding', 'rollover_prev_total_var'),
             ('New Term Fees', 'rollover_new_total_var'),
             ('Opening Balance', 'rollover_opening_total_var')
@@ -332,13 +387,15 @@ class FinanceTab:
         table_frame.pack(fill='both', expand=True, padx=10, pady=10)
 
         rollover_cols = [
-            'ID', 'Student', 'Class', 'Prev Outstanding', 'New Term Fees',
+            'ID', 'Include Carry', 'Student', 'Class', 'Prev Outstanding', 'New Term Fees',
             'Carry Forward', 'Reset', 'Opening Balance', 'Status'
         ]
         self.rollover_tree = ttk.Treeview(table_frame, columns=rollover_cols, show='headings', height=18)
         for col in rollover_cols:
             self.rollover_tree.heading(col, text=col)
             self.rollover_tree.column(col, width=120)
+        self.rollover_tree.column('ID', width=70)
+        self.rollover_tree.column('Include Carry', width=95, anchor='center')
         self.rollover_tree.column('Student', width=180)
         self.rollover_tree.column('Class', width=100)
         self.rollover_tree.column('Status', width=120)
@@ -347,12 +404,15 @@ class FinanceTab:
         self.rollover_tree.configure(yscrollcommand=rollover_scroll.set)
         self.rollover_tree.pack(side='left', fill='both', expand=True)
         rollover_scroll.pack(side='right', fill='y')
+        self.rollover_tree.bind('<Button-1>', self._on_rollover_tree_click)
+        self.rollover_tree.bind('<space>', lambda e: self.toggle_selected_rollover_carry())
         self.rollover_tree.bind('<Double-1>', lambda e: self.show_rollover_item_details())
 
         footer = ttk.Frame(self.term_rollover_frame)
         footer.pack(fill='x', padx=10, pady=(0, 10))
         self.rollover_info_var = tk.StringVar(value='Preview the next term before executing rollover.')
         ttk.Label(footer, textvariable=self.rollover_info_var).pack(side='left')
+        self._rollover_excluded_carry_ids = set()
 
     def _update_rollover_summary(self, preview_data=None):
         """Update rollover summary cards from preview data."""
@@ -360,6 +420,9 @@ class FinanceTab:
         self.rollover_total_students_var.set(str(summary.get('total_students', 0)))
         self.rollover_reset_students_var.set(str(summary.get('reset_students', 0)))
         self.rollover_carry_students_var.set(str(summary.get('carry_students', 0)))
+        self.rollover_credit_total_var.set(
+            f"{summary.get('credit_students', 0)} / {format_currency(float(summary.get('credit_carried_total', 0) or 0))}"
+        )
         self.rollover_prev_total_var.set(format_currency(float(summary.get('previous_outstanding_total', 0) or 0)))
         self.rollover_new_total_var.set(format_currency(float(summary.get('new_term_total', 0) or 0)))
         self.rollover_opening_total_var.set(format_currency(float(summary.get('opening_balance_total', 0) or 0)))
@@ -376,7 +439,7 @@ class FinanceTab:
             if status_filter != 'All':
                 carry_status = row.get('carry_status') or ''
                 pay_status = row.get('payment_status') or ''
-                if status_filter in ('Carried Forward', 'Reset'):
+                if status_filter in ('Carried Forward', 'Credit', 'Reset'):
                     if carry_status != status_filter:
                         continue
                 elif pay_status != status_filter:
@@ -395,9 +458,10 @@ class FinanceTab:
 
         rows = self._filtered_rollover_rows(getattr(self, '_rollover_preview_rows', []))
         for row in rows:
-            status = row.get('carry_status') if row.get('carry_status') == 'Carried Forward' else row.get('payment_status')
+            status = row.get('carry_status') if row.get('carry_status') in ('Carried Forward', 'Credit') else row.get('payment_status')
             self.rollover_tree.insert('', 'end', values=(
                 row.get('student_id'),
+                '[x]' if row.get('include_carry_forward', True) else '[ ]',
                 row.get('student_name'),
                 row.get('class'),
                 format_currency(float(row.get('previous_outstanding') or 0)),
@@ -412,14 +476,14 @@ class FinanceTab:
         """Load rollover defaults and latest executed summary."""
         try:
             from models.finance import FinancialManager
-            self.rollover_current_term_var.set(config.Config.CURRENT_TERM)
-            next_term = FinancialManager._get_next_term_name(config.Config.CURRENT_TERM)
-            self.rollover_next_term_var.set(next_term)
+            self._refresh_rollover_period_labels()
             self.rollover_class_combo['values'] = tuple(self.balance_class_combo['values']) if self.balance_class_combo['values'] else ('All',)
             latest = FinancialManager.get_latest_rollover_run()
             if latest:
+                to_year = latest.get('to_academic_year') or latest.get('academic_year')
                 self.rollover_info_var.set(
-                    f"Last completed rollover: {latest.get('from_term')} -> {latest.get('to_term')} on {latest.get('completed_at') or latest.get('created_at')}"
+                    f"Last completed rollover: {latest.get('from_term')} {latest.get('academic_year')} -> "
+                    f"{latest.get('to_term')} {to_year} on {latest.get('completed_at') or latest.get('created_at')}"
                 )
                 self._update_rollover_summary({'summary': {
                     'total_students': latest.get('total_students', 0),
@@ -434,26 +498,108 @@ class FinanceTab:
                 self.rollover_info_var.set('Preview the next term before executing rollover.')
             self._rollover_preview_rows = []
             self._rollover_preview = None
+            self._rollover_excluded_carry_ids = set()
             self._render_rollover_preview()
         except Exception as e:
             print(f"Error loading rollover data: {e}")
+
+    def _refresh_rollover_period_labels(self):
+        """Show the closing period and the derived next period (with academic years)."""
+        from models.finance import FinancialManager
+        year, term = config.Config.CURRENT_ACADEMIC_YEAR, config.Config.CURRENT_TERM
+        self.rollover_current_term_var.set(f"{term} ({year})")
+        next_year, next_term = FinancialManager._resolve_rollover_target(year, term)
+        self.rollover_next_term_var.set(next_term)
+        self.rollover_next_year_var.set(next_year)
+        suffix = "  - new academic year" if next_year != year else ""
+        self.rollover_next_period_var.set(f"{next_term} ({next_year}){suffix}")
+
+    def _selected_rollover_student_id(self):
+        selected = self.rollover_tree.selection()
+        if not selected:
+            return None
+        values = self.rollover_tree.item(selected[0], 'values')
+        try:
+            return int(values[0])
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    def _preview_rollover_with_current_exclusions(self):
+        """Refresh preview after carry-forward inclusion changes."""
+        from models.finance import FinancialManager
+        to_term = self.rollover_next_term_var.get().strip() or None
+        preview = FinancialManager.get_term_rollover_preview(
+            academic_year=config.Config.CURRENT_ACADEMIC_YEAR,
+            from_term=config.Config.CURRENT_TERM,
+            to_term=to_term,
+            excluded_student_ids=self._rollover_excluded_carry_ids
+        )
+        self._rollover_preview = preview
+        self._rollover_preview_rows = preview.get('rows') or []
+        self._rollover_excluded_carry_ids = set(preview.get('excluded_carry_student_ids') or [])
+        self._update_rollover_summary(preview)
+        self._render_rollover_preview()
+        return preview
+
+    def toggle_selected_rollover_carry(self):
+        """Toggle whether the selected student's carried balance enters the new term."""
+        student_id = self._selected_rollover_student_id()
+        if not student_id:
+            messagebox.showwarning("Select", "Select a student from the rollover preview.")
+            return
+        if student_id in self._rollover_excluded_carry_ids:
+            self._rollover_excluded_carry_ids.remove(student_id)
+        else:
+            self._rollover_excluded_carry_ids.add(student_id)
+        try:
+            preview = self._preview_rollover_with_current_exclusions()
+            excluded_count = len(preview.get('excluded_carry_student_ids') or [])
+            self.rollover_info_var.set(f"Carry-forward choices updated. Excluded students: {excluded_count}.")
+        except Exception as e:
+            messagebox.showerror("Preview Failed", f"Failed to update carry-forward choice: {e}")
+
+    def include_all_rollover_carry(self):
+        """Clear all manual carry-forward exclusions and refresh preview."""
+        self._rollover_excluded_carry_ids = set()
+        try:
+            self._preview_rollover_with_current_exclusions()
+            self.rollover_info_var.set("All eligible carried balances are included again.")
+        except Exception as e:
+            messagebox.showerror("Preview Failed", f"Failed to include all carried balances: {e}")
+
+    def _on_rollover_tree_click(self, event):
+        """Allow direct toggling from the Include Carry column."""
+        region = self.rollover_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        column = self.rollover_tree.identify_column(event.x)
+        row_id = self.rollover_tree.identify_row(event.y)
+        if column != "#2" or not row_id:
+            return
+        self.rollover_tree.selection_set(row_id)
+        self.rollover_tree.focus(row_id)
+        self.frame.after(1, self.toggle_selected_rollover_carry)
+        return "break"
 
     def preview_term_rollover(self):
         """Generate rollover preview using centralized backend service."""
         try:
             from models.finance import FinancialManager
-            to_term = self.rollover_next_term_var.get().strip() or FinancialManager._get_next_term_name(config.Config.CURRENT_TERM)
+            to_term = self.rollover_next_term_var.get().strip() or None
             preview = FinancialManager.get_term_rollover_preview(
                 academic_year=config.Config.CURRENT_ACADEMIC_YEAR,
                 from_term=config.Config.CURRENT_TERM,
-                to_term=to_term
+                to_term=to_term,
+                excluded_student_ids=self._rollover_excluded_carry_ids
             )
             self._rollover_preview = preview
             self._rollover_preview_rows = preview.get('rows') or []
+            self._rollover_excluded_carry_ids = set(preview.get('excluded_carry_student_ids') or [])
             self._update_rollover_summary(preview)
             self._render_rollover_preview()
             info_message = (
-                f"Preview ready for {preview.get('from_term')} -> {preview.get('to_term')}. Review and confirm before execution."
+                f"Preview ready for {preview.get('from_term')} {preview.get('from_academic_year')} -> "
+                f"{preview.get('to_term')} {preview.get('to_academic_year')}. Review and confirm before execution."
             )
             warnings = preview.get('warnings') or []
             if warnings:
@@ -467,27 +613,36 @@ class FinanceTab:
         try:
             from models.finance import FinancialManager
             from_term = config.Config.CURRENT_TERM
-            to_term = self.rollover_next_term_var.get().strip() or FinancialManager._get_next_term_name(from_term)
-            if from_term == to_term:
-                messagebox.showwarning("Invalid Term", "Next term must be different from the current term.")
-                return
+            from_year = config.Config.CURRENT_ACADEMIC_YEAR
+            to_year, to_term = FinancialManager._resolve_rollover_target(from_year, from_term)
 
             preview = getattr(self, '_rollover_preview', None)
-            if not preview or preview.get('to_term') != to_term or preview.get('from_term') != from_term:
+            if (not preview or preview.get('to_term') != to_term or preview.get('from_term') != from_term
+                    or preview.get('to_academic_year') != to_year):
                 self.preview_term_rollover()
                 preview = getattr(self, '_rollover_preview', None)
             if not preview:
                 return
 
             summary = preview.get('summary') or {}
+            excluded_count = len(self._rollover_excluded_carry_ids)
+            year_note = (
+                f"\n\nThis closes academic year {from_year}: the current academic year becomes {to_year} "
+                f"and last year's term dates are cleared. Enter the new term dates in Preferences afterwards."
+                if to_year != from_year else ""
+            )
             confirm = messagebox.askyesno(
                 "Confirm Term Rollover",
-                f"Execute rollover from {from_term} to {to_term}?\n\n"
+                f"Execute rollover from {from_term} {from_year} to {to_term} {to_year}?\n\n"
                 f"Students: {summary.get('total_students', 0)}\n"
                 f"Carry Forward: {summary.get('carry_students', 0)}\n"
+                f"Credit Forward: {summary.get('credit_students', 0)} "
+                f"({format_currency(float(summary.get('credit_carried_total', 0) or 0))})\n"
                 f"Reset: {summary.get('reset_students', 0)}\n"
+                f"Manual Carry Exclusions: {excluded_count}\n"
                 f"Opening Balance Total: {format_currency(float(summary.get('opening_balance_total', 0) or 0))}\n\n"
-                f"This will update the current term and write rollover records."
+                f"This will update the current term, write rollover records, and mark all new-student badges as continuing."
+                f"{year_note}"
             )
             if not confirm:
                 return
@@ -496,25 +651,29 @@ class FinanceTab:
                 academic_year=config.Config.CURRENT_ACADEMIC_YEAR,
                 from_term=from_term,
                 to_term=to_term,
-                term_start_date=(self.rollover_start_date_var.get().strip() or None)
+                term_start_date=(self.rollover_start_date_var.get().strip() or None),
+                excluded_student_ids=self._rollover_excluded_carry_ids
             )
             self._rollover_preview = result
             self._rollover_preview_rows = result.get('rows') or []
-            self.rollover_current_term_var.set(config.Config.CURRENT_TERM)
-            self.rollover_next_term_var.set(FinancialManager._get_next_term_name(config.Config.CURRENT_TERM))
+            self._rollover_excluded_carry_ids = set()
+            self._refresh_rollover_period_labels()
+            self.rollover_start_date_var.set('')
             self._update_rollover_summary(result)
             self._render_rollover_preview()
             self.load_fee_types()
             self.load_student_balances()
             self.load_financial_summary()
             self.rollover_info_var.set(
-                f"Rollover completed successfully. Current term is now {config.Config.CURRENT_TERM}."
+                f"Rollover completed. Current term is now {config.Config.CURRENT_TERM} {config.Config.CURRENT_ACADEMIC_YEAR}."
             )
             cloned_fee_types = int(result.get('cloned_fee_types', 0) or 0)
+            continuing_students = int(result.get('continuing_students_updated', 0) or 0)
             messagebox.showinfo(
                 "Rollover Complete",
-                f"Term rollover to {config.Config.CURRENT_TERM} completed successfully."
+                f"Term rollover to {config.Config.CURRENT_TERM} {config.Config.CURRENT_ACADEMIC_YEAR} completed successfully."
                 + (f"\n\nFee types copied from the previous term: {cloned_fee_types}" if cloned_fee_types > 0 else "")
+                + (f"\n\nStudents marked as continuing: {continuing_students}" if continuing_students > 0 else "")
             )
         except Exception as e:
             messagebox.showerror("Rollover Failed", f"Failed to execute rollover: {e}")
@@ -540,7 +699,7 @@ class FinanceTab:
 
         ttk.Label(
             dialog,
-            text=f"{row.get('student_name')} | Prev Outstanding: {format_currency(float(row.get('previous_outstanding') or 0))} | Opening Balance: {format_currency(float(row.get('opening_balance') or 0))}",
+            text=f"{row.get('student_name')} | Include Carry: {'Yes' if row.get('include_carry_forward', True) else 'No'} | Prev Outstanding: {format_currency(float(row.get('previous_outstanding') or 0))} | Opening Balance: {format_currency(float(row.get('opening_balance') or 0))}",
             font=('Arial', 10, 'bold')
         ).pack(anchor='w', padx=10, pady=10)
 
@@ -564,7 +723,7 @@ class FinanceTab:
                 format_currency(float(detail.get('outstanding') or 0)),
                 format_currency(float(detail.get('carried_amount') or 0)),
                 format_currency(float(detail.get('reset_amount') or 0)),
-                detail.get('status')
+                'Reset (Excluded)' if detail.get('carry_excluded') else detail.get('status')
             ))
 
     def setup_payments_context_menu(self):
@@ -658,6 +817,21 @@ class FinanceTab:
     
     def setup_expenses_tab(self):
         """Setup expenses tab"""
+        header_frame = ttk.LabelFrame(self.expenses_frame, text="Expense Term View", padding=10)
+        header_frame.pack(fill='x', padx=10, pady=(10, 0))
+        self.expenses_term_info_var = tk.StringVar()
+        ttk.Label(header_frame, textvariable=self.expenses_term_info_var, font=('Arial', 11, 'bold')).pack(side='left', padx=5)
+        ttk.Button(header_frame, text="Previous Term", command=lambda: self._step_finance_term(-1)).pack(side='right', padx=4)
+        ttk.Button(header_frame, text="Next Term", command=lambda: self._step_finance_term(1)).pack(side='right', padx=4)
+        ttk.Combobox(
+            header_frame,
+            textvariable=self.finance_view_term_var,
+            values=getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3']),
+            state='readonly',
+            width=16
+        ).pack(side='right', padx=4)
+        ttk.Label(header_frame, text="Term:").pack(side='right', padx=(10, 4))
+
         # Left frame for form
         left_frame = ttk.Frame(self.expenses_frame)
         left_frame.pack(side='left', fill='both', expand=True, padx=10, pady=10)
@@ -756,7 +930,7 @@ class FinanceTab:
         summary_frame = ttk.Frame(right_frame)
         summary_frame.pack(fill='x', pady=(10, 0))
         
-        ttk.Label(summary_frame, text="Month Total:").pack(side='left', padx=5)
+        ttk.Label(summary_frame, text="Term Total:").pack(side='left', padx=5)
         self.month_expense_var = tk.StringVar(value=format_currency(0.0))
         ttk.Label(summary_frame, textvariable=self.month_expense_var, font=('Arial', 12, 'bold')).pack(side='left', padx=5)
         
@@ -766,18 +940,66 @@ class FinanceTab:
     
     def setup_financial_summary_tab(self):
         """Setup financial summary tab"""
+        header_frame = ttk.LabelFrame(self.financial_summary_frame, text="Financial Summary Term View", padding=10)
+        header_frame.pack(fill='x', padx=20, pady=(20, 0))
+        self.summary_term_info_var = tk.StringVar()
+        ttk.Label(header_frame, textvariable=self.summary_term_info_var, font=('Arial', 11, 'bold')).pack(side='left', padx=5)
+        ttk.Button(header_frame, text="Previous Term", command=lambda: self._step_finance_term(-1)).pack(side='right', padx=4)
+        ttk.Button(header_frame, text="Next Term", command=lambda: self._step_finance_term(1)).pack(side='right', padx=4)
+        ttk.Combobox(
+            header_frame,
+            textvariable=self.finance_view_term_var,
+            values=getattr(config.Config, 'TERMS', ['Term 1', 'Term 2', 'Term 3']),
+            state='readonly',
+            width=16
+        ).pack(side='right', padx=4)
+        ttk.Label(header_frame, text="Term:").pack(side='right', padx=(10, 4))
+
+        scroll_container = ttk.Frame(self.financial_summary_frame)
+        scroll_container.pack(fill='both', expand=True)
+
+        summary_canvas = tk.Canvas(scroll_container, highlightthickness=0)
+        page_scrollbar = ttk.Scrollbar(scroll_container, orient='vertical', command=summary_canvas.yview)
+        summary_canvas.configure(yscrollcommand=page_scrollbar.set)
+        summary_canvas.pack(side='left', fill='both', expand=True)
+        page_scrollbar.pack(side='right', fill='y')
+
+        content_frame = ttk.Frame(summary_canvas)
+        content_window = summary_canvas.create_window((0, 0), window=content_frame, anchor='nw')
+
+        def _update_scroll_region(event=None):
+            summary_canvas.configure(scrollregion=summary_canvas.bbox('all'))
+
+        def _resize_content(event):
+            summary_canvas.itemconfigure(content_window, width=event.width)
+
+        def _on_mousewheel(event):
+            summary_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+
+        def _bind_mousewheel(event=None):
+            summary_canvas.bind_all('<MouseWheel>', _on_mousewheel)
+
+        def _unbind_mousewheel(event=None):
+            summary_canvas.unbind_all('<MouseWheel>')
+
+        content_frame.bind('<Configure>', _update_scroll_region)
+        summary_canvas.bind('<Configure>', _resize_content)
+        summary_canvas.bind('<Enter>', _bind_mousewheel)
+        summary_canvas.bind('<Leave>', _unbind_mousewheel)
+
         # Summary cards
-        summary_frame = ttk.Frame(self.financial_summary_frame)
+        summary_frame = ttk.Frame(content_frame)
         summary_frame.pack(fill='x', padx=20, pady=20)
         
         self.summary_cards = []
         summaries = [
-            ('💰 Total Income', 'total_income_var', '#4CAF50'),
-            ('📉 Total Expenses', 'total_expenses_var', '#F44336'),
-            ('📊 Net Balance', 'net_balance_var', '#2196F3'),
-            ('📈 This Month', 'this_month_var', '#FF9800'),
-            ('📅 Year to Date', 'ytd_var', '#9C27B0'),
-            ('⚠️ Outstanding', 'outstanding_var', '#607D8B')
+            ('Selected Term Income', 'total_income_var', '#4CAF50'),
+            ('Selected Term Expenses', 'total_expenses_var', '#F44336'),
+            ('Selected Term Net', 'net_balance_var', '#2196F3'),
+            ('Academic Year Income', 'academic_year_income_var', '#FF9800'),
+            ('Academic Year Expenses', 'academic_year_expenses_var', '#9C27B0'),
+            ('Academic Year Net', 'academic_year_net_var', '#607D8B'),
+            ('Outstanding', 'outstanding_var', '#607D8B')
         ]
         
         for i in range(0, len(summaries), 3):
@@ -792,7 +1014,7 @@ class FinanceTab:
                     self.summary_cards.append(card)
         
         # Charts/Graphs frame
-        charts_frame = ttk.LabelFrame(self.financial_summary_frame, text="Financial Charts", padding=10)
+        charts_frame = ttk.LabelFrame(content_frame, text="Financial Charts", padding=10)
         charts_frame.pack(fill='both', expand=True, padx=20, pady=10)
         
         # Income vs Expenses chart (simulated with labels)
@@ -834,11 +1056,22 @@ class FinanceTab:
         scrollbar2.pack(side='right', fill='y')
 
         # Fee totals (per fee type)
-        fee_totals_frame = ttk.LabelFrame(self.financial_summary_frame, text="Fees Collected by Type", padding=10)
+        fee_totals_frame = ttk.LabelFrame(content_frame, text="Fees Collected by Type", padding=10)
         fee_totals_frame.pack(fill='both', padx=20, pady=(0, 10))
 
-        self.fee_totals_tree = ttk.Treeview(fee_totals_frame, columns=('Fee Type', 'Total Collected', 'Payments'), show='headings', height=6)
-        for col, w in (('Fee Type', 240), ('Total Collected', 120), ('Payments', 80)):
+        self.fee_totals_tree = ttk.Treeview(
+            fee_totals_frame,
+            columns=('Fee Type', 'Configured Terms', 'Selected Term', 'Academic Year', 'Payments'),
+            show='headings',
+            height=8
+        )
+        for col, w in (
+            ('Fee Type', 220),
+            ('Configured Terms', 140),
+            ('Selected Term', 130),
+            ('Academic Year', 130),
+            ('Payments', 90)
+        ):
             self.fee_totals_tree.heading(col, text=col)
             self.fee_totals_tree.column(col, width=w)
 
@@ -848,7 +1081,7 @@ class FinanceTab:
         fee_totals_scroll.pack(side='right', fill='y')
         
         # Action buttons
-        button_frame = ttk.Frame(self.financial_summary_frame)
+        button_frame = ttk.Frame(content_frame)
         button_frame.pack(fill='x', padx=20, pady=10)
         
         actions = [
@@ -1081,10 +1314,10 @@ class FinanceTab:
             class_scope_map = {}
             try:
                 scope_rows = db.execute_query(
-                    """
+                    f"""
                     SELECT
                         ftc.fee_type_id,
-                        GROUP_CONCAT(DISTINCT c.class_name ORDER BY c.class_name SEPARATOR ', ') AS classes
+                        {db.group_concat_distinct("c.class_name", "', '")} AS classes
                     FROM fee_type_classes ftc
                     JOIN classes c ON c.class_id = ftc.class_id
                     WHERE (ftc.academic_year IS NULL OR ftc.academic_year = '' OR ftc.academic_year = %s)
@@ -1133,25 +1366,9 @@ class FinanceTab:
             return
         data = dialog.result_data
         try:
+            normalized_term = config.Config.normalize_term_name(data['term'])
             query = "INSERT INTO fee_types (fee_name, description, amount, term, academic_year, is_required) VALUES (%s, %s, %s, %s, %s, %s)"
-            fid = db.execute_query(query, (data['fee_name'], '', data['amount'], data['term'], config.Config.CURRENT_ACADEMIC_YEAR, 1 if data['is_required'] else 0))
-            # Ensure mapping table exists
-            try:
-                db.execute_query(
-                    """
-                    CREATE TABLE IF NOT EXISTS fee_type_classes (
-                        id INT PRIMARY KEY AUTO_INCREMENT,
-                        fee_type_id INT NOT NULL,
-                        class_id INT NOT NULL,
-                        academic_year VARCHAR(20),
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE KEY unique_fee_type_class (fee_type_id, class_id)
-                    ) ENGINE=InnoDB
-                    """
-                )
-            except Exception:
-                pass
-
+            fid = db.execute_query(query, (data['fee_name'], '', data['amount'], normalized_term, config.Config.CURRENT_ACADEMIC_YEAR, 1 if data['is_required'] else 0))
             # Persist mappings if specific classes chosen
             if not data.get('apply_to_all'):
                 # handle numeric ids
@@ -1213,8 +1430,9 @@ class FinanceTab:
             return
         data = dialog.result_data
         try:
+            normalized_term = config.Config.normalize_term_name(data['term'])
             query = "UPDATE fee_types SET fee_name=%s, amount=%s, term=%s, is_required=%s WHERE fee_type_id=%s"
-            db.execute_query(query, (data['fee_name'], data['amount'], data['term'], 1 if data.get('is_required') else 0, fid))
+            db.execute_query(query, (data['fee_name'], data['amount'], normalized_term, 1 if data.get('is_required') else 0, fid))
             # Update mappings: remove old then insert new if needed
             try:
                 db.execute_query('DELETE FROM fee_type_classes WHERE fee_type_id=%s', (fid,))
@@ -1354,6 +1572,7 @@ class FinanceTab:
     
     def load_data(self):
         """Load all financial data"""
+        self.reset_finance_view()
         self.load_students_for_payment()
         self.load_fee_types()
         self.load_recent_payments()
@@ -1399,27 +1618,75 @@ class FinanceTab:
     def on_student_selected(self, event=None):
         """Reload fee types based on selected student's class."""
         try:
+            previous_fee_type_id = self._selected_fee_type_id()
             class_name = self._extract_selected_student_class()
             self.load_fee_types(class_name=class_name)
+            if previous_fee_type_id:
+                for option in self.fee_type_combo['values'] or []:
+                    if str(option).startswith(f"{previous_fee_type_id}:"):
+                        self.fee_type_var.set(option)
+                        self.on_fee_type_selected()
+                        return
             # reset selected fee type if it is no longer valid
             current = (self.fee_type_var.get() or '').strip()
             if current and current not in (self.fee_type_combo['values'] or []):
                 self.fee_type_var.set('')
                 self.amount_var.set('')
+            elif current:
+                self.on_fee_type_selected()
         except Exception:
             pass
+
+    def _extract_selected_student_id(self) -> int:
+        """Extract the selected student id from the payment student field."""
+        student_sel = (self.student_var.get() or '').strip()
+        try:
+            return int(student_sel.split(':')[0])
+        except (ValueError, IndexError):
+            return 0
+
+    def _selected_fee_type_id(self) -> int:
+        """Extract the selected fee type id from the payment fee field."""
+        try:
+            return int((self.fee_type_var.get() or '').split(':')[0])
+        except (ValueError, IndexError):
+            return 0
+
+    def _load_student_carried_forward_amount(self, student_id: int) -> float:
+        """Return this student's remaining carried-forward balance for the active term."""
+        if not student_id:
+            return 0.0
+        try:
+            from models.finance import FinancialManager
+            balance = FinancialManager.get_student_balance(
+                student_id=student_id,
+                academic_year=config.Config.CURRENT_ACADEMIC_YEAR,
+                term=config.Config.CURRENT_TERM
+            )
+            return float(balance.get('remaining_carried_balance') or balance.get('carried_balance') or 0)
+        except Exception:
+            return 0.0
 
     def load_fee_types(self, class_name: str = ""):
         """Load fee types for combobox (optionally filtered by student class)."""
         try:
             from models.finance import FeeType
+            FeeType.ensure_carried_forward_fee_type(config.Config.CURRENT_ACADEMIC_YEAR, config.Config.CURRENT_TERM)
+            selected_student_id = self._extract_selected_student_id()
+
+            def format_fee_option(fee_type_id, fee_name, amount):
+                display_amount = float(amount or 0)
+                if FeeType.is_carried_forward_fee_name(fee_name):
+                    display_amount = self._load_student_carried_forward_amount(selected_student_id)
+                return f"{fee_type_id}: {fee_name} ({format_currency(display_amount)})"
+
             if class_name:
                 fee_types = FeeType.get_applicable_for_class(
                     class_name,
                     config.Config.CURRENT_ACADEMIC_YEAR,
                     config.Config.CURRENT_TERM
                 )
-                fee_list = [f"{ft.fee_type_id}: {ft.fee_name} ({format_currency(ft.amount)})" for ft in fee_types]
+                fee_list = [format_fee_option(ft.fee_type_id, ft.fee_name, ft.amount) for ft in fee_types]
             else:
                 query = """
                     SELECT fee_type_id, fee_name, amount
@@ -1448,7 +1715,7 @@ class FinanceTab:
                     ),
                     fetch=True
                 )
-                fee_list = [f"{r['fee_type_id']}: {r['fee_name']} ({format_currency(r['amount'])})" for r in results]
+                fee_list = [format_fee_option(r['fee_type_id'], r['fee_name'], r['amount']) for r in results]
             self.fee_type_combo['values'] = fee_list
             # Keep filter combos global; only payment form list should be class-scoped.
             if not class_name:
@@ -1476,6 +1743,15 @@ class FinanceTab:
                 return
             fee_name = res[0].get('fee_name', '') or ''
             db_amount = res[0].get('amount', 0) or 0
+            from models.finance import FeeType
+
+            if FeeType.is_carried_forward_fee_name(fee_name):
+                student_id = self._extract_selected_student_id()
+                expected = self._load_student_carried_forward_amount(student_id)
+                self.amount_var.set(str(int(expected) if float(expected).is_integer() else f"{expected:.2f}"))
+                if hasattr(self, 'amount_entry'):
+                    self.amount_entry.config(state='normal')
+                return
 
             # Default behavior: set amount to stored fee amount
             expected = float(db_amount)
@@ -1683,7 +1959,7 @@ class FinanceTab:
                     continue
                 balance = float(row.get('balance') or 0)
                 paid = float(row.get('amount_paid') or 0)
-                total_fees = float(row.get('total_fees') or 0) + float(row.get('carried_balance') or 0)
+                total_fees = float(row.get('opening_balance') or 0)
                 status = "Paid" if balance <= 0 else "Partial" if paid > 0 else "Unpaid"
                 if float(row.get('carried_balance') or 0) > 0 and balance > 0:
                     status = "Carried Forward"
@@ -1735,44 +2011,22 @@ class FinanceTab:
             self.expenses_tree.delete(item)
         
         try:
-            # Get month total
-            today = date.today()
-            first_day = date(today.year, today.month, 1)
-            
-            query = """
-                SELECT COALESCE(SUM(amount), 0) as total 
-                FROM expenses 
-                WHERE expense_date BETWEEN %s AND %s
-            """
-            result = db.execute_query(query, (first_day, today), fetch=True)
-            if result:
-                self.month_expense_var.set(format_currency(float(result[0]['total'])))
-            
-            # Get recent expenses
-            query = """
-                SELECT 
-                    expense_id,
-                    expense_date,
-                    description,
-                    category,
-                    amount,
-                    payment_method,
-                    receipt_number
-                FROM expenses
-                ORDER BY expense_date DESC, created_at DESC
-                LIMIT 50
-            """
-            results = db.execute_query(query, fetch=True)
-            
-            for row in results:
+            from models.finance import Expense
+
+            academic_year, term = self._current_finance_view()
+            total = Expense.get_term_expense_total(academic_year, term)
+            self.month_expense_var.set(format_currency(total))
+
+            results = Expense.get_term_expenses(academic_year, term, limit=50)
+            for expense in results:
                 self.expenses_tree.insert('', 'end', values=(
-                    row['expense_id'],
-                    row['expense_date'],
-                    row['description'][:50] + "..." if len(row['description']) > 50 else row['description'],
-                    row['category'] or 'Uncategorized',
-                    format_currency(float(row['amount'])),
-                    row['payment_method'],
-                    row['receipt_number'] or ''
+                    expense.expense_id,
+                    expense.expense_date,
+                    expense.description[:50] + "..." if len(expense.description) > 50 else expense.description,
+                    expense.category or 'Uncategorized',
+                    format_currency(float(expense.amount or 0)),
+                    expense.payment_method,
+                    expense.receipt_number or ''
                 ))
                 
         except Exception as e:
@@ -1818,6 +2072,8 @@ class FinanceTab:
         item = self.expenses_tree.item(sel[0], 'values')
         expense_id = item[0]
         try:
+            from models.finance import Expense
+            Expense.ensure_term_columns()
             q = 'SELECT * FROM expenses WHERE expense_id=%s'
             rows = db.execute_query(q, (expense_id,), fetch=True)
             if not rows:
@@ -1864,10 +2120,14 @@ class FinanceTab:
                     amt = parse_currency(amount_var.get())
                     mth = method_var.get().strip() or 'Cash'
                     rno = receipt_var.get().strip() or None
+                    academic_year, term = self._current_finance_view()
 
                     db.execute_query(
-                        """UPDATE expenses SET expense_date=%s, description=%s, category=%s, amount=%s, payment_method=%s, receipt_number=%s WHERE expense_id=%s""",
-                        (pdate, desc, cat, amt, mth, rno, expense_id)
+                        """UPDATE expenses
+                           SET expense_date=%s, description=%s, category=%s, academic_year=%s, term=%s,
+                               amount=%s, payment_method=%s, receipt_number=%s
+                           WHERE expense_id=%s""",
+                        (pdate, desc, cat, academic_year, term, amt, mth, rno, expense_id)
                     )
                     messagebox.showinfo('Success', 'Expense updated')
                     dlg.destroy()
@@ -1887,180 +2147,66 @@ class FinanceTab:
     def load_financial_summary(self):
         """Load financial summary"""
         try:
-            today = date.today()
-            first_day_month = date(today.year, today.month, 1)
-            first_day_year = date(today.year, 1, 1)
-            
-            # Total income (all time)
-            query = "SELECT COALESCE(SUM(amount_paid), 0) as total FROM student_fees"
-            result = db.execute_query(query, fetch=True)
-            if result:
-                from utils.helpers import format_currency
-                self.total_income_var.set(format_currency(float(result[0]['total'])))
-            
-            # Total expenses (all time)
-            query = "SELECT COALESCE(SUM(amount), 0) as total FROM expenses"
-            result = db.execute_query(query, fetch=True)
-            if result:
-                from utils.helpers import format_currency
-                self.total_expenses_var.set(format_currency(float(result[0]['total'])))
-            
-            # Net balance
-            income = float(parse_currency(self.total_income_var.get()))
-            expenses = float(parse_currency(self.total_expenses_var.get()))
-            self.net_balance_var.set(format_currency(income - expenses))
-            
-            # This month
-            query = """
-                SELECT 
-                    COALESCE(SUM(CASE WHEN payment_date BETWEEN %s AND %s THEN amount_paid ELSE 0 END), 0) as income,
-                    COALESCE(SUM(CASE WHEN expense_date BETWEEN %s AND %s THEN amount ELSE 0 END), 0) as expenses
-                FROM (SELECT payment_date, amount_paid, NULL as expense_date, NULL as amount FROM student_fees
-                      UNION ALL
-                      SELECT NULL as payment_date, NULL as amount_paid, expense_date, amount FROM expenses) as combined
-            """
-            result = db.execute_query(query, (first_day_month, today, first_day_month, today), fetch=True)
-            if result:
-                month_income = result[0]['income']
-                month_expenses = result[0]['expenses']
-                self.this_month_var.set(format_currency(month_income - month_expenses))
-            
-            # Year to date
-            query = """
-                SELECT 
-                    COALESCE(SUM(CASE WHEN payment_date BETWEEN %s AND %s THEN amount_paid ELSE 0 END), 0) as income,
-                    COALESCE(SUM(CASE WHEN expense_date BETWEEN %s AND %s THEN amount ELSE 0 END), 0) as expenses
-                FROM (SELECT payment_date, amount_paid, NULL as expense_date, NULL as amount FROM student_fees
-                      UNION ALL
-                      SELECT NULL as payment_date, NULL as amount_paid, expense_date, amount FROM expenses) as combined
-            """
-            result = db.execute_query(query, (first_day_year, today, first_day_year, today), fetch=True)
-            if result:
-                ytd_income = result[0]['income']
-                ytd_expenses = result[0]['expenses']
-                self.ytd_var.set(format_currency(ytd_income - ytd_expenses))
-            
-            # Outstanding fees
-            try:
-                from models.finance import FinancialManager
-                balances = FinancialManager.get_student_balances(config.Config.CURRENT_ACADEMIC_YEAR, term=config.Config.CURRENT_TERM)
-                outstanding_total = sum(float(r.get('balance') or 0) for r in balances if float(r.get('balance') or 0) > 0)
-                self.outstanding_var.set(format_currency(outstanding_total))
-            except Exception:
-                self.outstanding_var.set(format_currency(0))
-            
-            # Load monthly breakdown
-            self.load_monthly_breakdown()
-            
-            # Load expense categories
-            self.load_expense_categories()
-            
-            # Load fee totals by type
-            try:
-                from models.finance import FinancialManager
-                for item in self.fee_totals_tree.get_children():
-                    self.fee_totals_tree.delete(item)
-                fee_totals = FinancialManager.get_collected_by_fee_type()
-                for row in fee_totals:
-                    self.fee_totals_tree.insert('', 'end', values=(
-                        row.get('fee_name'),
-                        format_currency(float(row.get('total_collected', 0))),
-                        row.get('payment_count', 0)
-                    ))
-            except Exception as e:
-                print(f"Error loading fee totals: {e}")
+            from models.finance import FinancialManager
+
+            academic_year, term = self._current_finance_view()
+            summary = FinancialManager.get_term_financial_summary(academic_year, term)
+
+            self.total_income_var.set(format_currency(float(summary.get('total_income') or 0)))
+            self.total_expenses_var.set(format_currency(float(summary.get('total_expenses') or 0)))
+            self.net_balance_var.set(format_currency(float(summary.get('net_balance') or 0)))
+            self.academic_year_income_var.set(format_currency(float(summary.get('academic_year_total_income') or 0)))
+            self.academic_year_expenses_var.set(format_currency(float(summary.get('academic_year_total_expenses') or 0)))
+            self.academic_year_net_var.set(format_currency(float(summary.get('academic_year_net_balance') or 0)))
+            self.outstanding_var.set(format_currency(float(summary.get('outstanding_fees') or 0)))
+
+            self.load_monthly_breakdown(summary.get('monthly_breakdown') or [])
+            self.load_expense_categories(summary.get('expense_categories') or [])
+
+            for item in self.fee_totals_tree.get_children():
+                self.fee_totals_tree.delete(item)
+            for row in summary.get('fee_totals') or []:
+                self.fee_totals_tree.insert('', 'end', values=(
+                    row.get('fee_name'),
+                    row.get('fee_terms') or '',
+                    format_currency(float(row.get('term_collected', 0) or 0)),
+                    format_currency(float(row.get('academic_year_collected', 0) or 0)),
+                    row.get('term_payment_count', 0)
+                ))
             
         except Exception as e:
             print(f"Error loading financial summary: {e}")
     
-    def load_monthly_breakdown(self):
+    def load_monthly_breakdown(self, rows=None):
         """Load monthly financial breakdown"""
         # Clear existing items
         for item in self.monthly_tree.get_children():
             self.monthly_tree.delete(item)
         
         try:
-            query = """
-                SELECT 
-                    DATE_FORMAT(payment_date, '%Y-%m') as month,
-                    COALESCE(SUM(amount_paid), 0) as income
-                FROM student_fees
-                WHERE YEAR(payment_date) = YEAR(CURDATE())
-                GROUP BY DATE_FORMAT(payment_date, '%Y-%m')
-                ORDER BY month
-            """
-            income_results = db.execute_query(query, fetch=True)
-            
-            query = """
-                SELECT 
-                    DATE_FORMAT(expense_date, '%Y-%m') as month,
-                    COALESCE(SUM(amount), 0) as expenses
-                FROM expenses
-                WHERE YEAR(expense_date) = YEAR(CURDATE())
-                GROUP BY DATE_FORMAT(expense_date, '%Y-%m')
-                ORDER BY month
-            """
-            expense_results = db.execute_query(query, fetch=True)
-            
-            # Combine results
-            monthly_data = {}
-            
-            for row in income_results:
-                monthly_data[row['month']] = {
-                    'income': float(row['income']),
-                    'expenses': 0,
-                    'net': float(row['income'])
-                }
-            
-            for row in expense_results:
-                month = row['month']
-                expenses = float(row['expenses'])
-                if month in monthly_data:
-                    monthly_data[month]['expenses'] = expenses
-                    monthly_data[month]['net'] = monthly_data[month]['income'] - expenses
-                else:
-                    monthly_data[month] = {
-                        'income': 0,
-                        'expenses': expenses,
-                        'net': -expenses
-                    }
-            
-            # Add to treeview
-            for month, data in sorted(monthly_data.items()):
+            for row in rows or []:
                 self.monthly_tree.insert('', 'end', values=(
-                    month,
-                    format_currency(data['income']),
-                    format_currency(data['expenses']),
-                    format_currency(data['net'])
+                    row.get('month'),
+                    format_currency(float(row.get('income') or 0)),
+                    format_currency(float(row.get('expenses') or 0)),
+                    format_currency(float(row.get('net') or 0))
                 ))
                 
         except Exception as e:
             print(f"Error loading monthly breakdown: {e}")
     
-    def load_expense_categories(self):
+    def load_expense_categories(self, rows=None):
         """Load expense categories breakdown"""
         # Clear existing items
         for item in self.category_tree.get_children():
             self.category_tree.delete(item)
         
         try:
-            query = """
-                SELECT 
-                    COALESCE(category, 'Uncategorized') as category,
-                    COUNT(*) as count,
-                    COALESCE(SUM(amount), 0) as total
-                FROM expenses
-                WHERE YEAR(expense_date) = YEAR(CURDATE())
-                GROUP BY category
-                ORDER BY total DESC
-            """
-            results = db.execute_query(query, fetch=True)
-            
-            for row in results:
+            for row in rows or []:
                 self.category_tree.insert('', 'end', values=(
                     row['category'],
-                    row['count'],
-                    format_currency(float(row['total']))
+                    row.get('expense_count') or row.get('count') or 0,
+                    format_currency(float(row.get('total_amount') or row.get('total') or 0))
                 ))
                 
         except Exception as e:
@@ -2182,10 +2328,14 @@ class FinanceTab:
         self.receipt_var.set("")
         self.description_text.delete("1.0", "end")
         self.date_var.set(date.today().strftime('%Y-%m-%d'))
+        if hasattr(self, 'amount_entry'):
+            self.amount_entry.config(state='normal')
     
     def record_expense(self):
         """Record an expense"""
         try:
+            from models.finance import Expense
+            Expense.ensure_term_columns()
             # Validate inputs
             if not self.expense_desc_var.get():
                 messagebox.showwarning("Warning", "Please enter a description")
@@ -2216,13 +2366,16 @@ class FinanceTab:
             # Insert expense
             query = """
                 INSERT INTO expenses 
-                (expense_date, description, category, amount, payment_method, receipt_number, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (expense_date, description, category, academic_year, term, amount, payment_method, receipt_number, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
+            academic_year, term = self._current_finance_view()
             params = (
                 self.expense_date_var.get(),
                 self.expense_desc_var.get(),
                 self.expense_category_var.get() or 'Other',
+                academic_year,
+                term,
                 amount,
                 self.expense_method_var.get(),
                 receipt_number,
@@ -2308,49 +2461,8 @@ class FinanceTab:
             dialog.transient(self.frame)
             dialog.grab_set()
             
-            # Get student's class so we can override tuition amounts
-            try:
-                sres = db.execute_query("SELECT class FROM students WHERE student_id=%s", (student_id,), fetch=True)
-                student_class = sres[0]['class'] if sres else ''
-            except Exception:
-                student_class = ''
-
-            # Get fee details for academic year
-            query = """
-                SELECT 
-                    ft.fee_name,
-                    ft.amount as expected_amount,
-                    COALESCE(SUM(sf.amount_paid), 0) as paid_amount,
-                    ft.amount - COALESCE(SUM(sf.amount_paid), 0) as balance,
-                    MAX(sf.payment_date) as last_payment
-                FROM fee_types ft
-                LEFT JOIN student_fees sf ON ft.fee_type_id = sf.fee_type_id AND sf.student_id = %s
-                WHERE ft.academic_year = %s
-                  AND (
-                        ft.term = %s
-                        OR ft.term IS NULL
-                        OR ft.term = ''
-                        OR NOT EXISTS (
-                            SELECT 1
-                            FROM fee_types ftx
-                            WHERE ftx.academic_year = %s
-                              AND ftx.term = %s
-                        )
-                  )
-                GROUP BY ft.fee_type_id, ft.fee_name, ft.amount
-                ORDER BY ft.fee_name
-            """
-            results = db.execute_query(
-                query,
-                (
-                    student_id,
-                    config.Config.CURRENT_ACADEMIC_YEAR,
-                    config.Config.CURRENT_TERM,
-                    config.Config.CURRENT_ACADEMIC_YEAR,
-                    config.Config.CURRENT_TERM
-                ),
-                fetch=True
-            )
+            from models.student import StudentManager
+            summary = StudentManager.get_student_financial_summary(student_id)
             
             # Create treeview
             columns = ['Fee Type', 'Expected', 'Paid', 'Balance', 'Last Payment']
@@ -2366,66 +2478,37 @@ class FinanceTab:
             tree.pack(side='left', fill='both', expand=True, padx=10, pady=10)
             scrollbar.pack(side='right', fill='y', pady=10)
             
-            # Add data (apply tuition overrides)
+            payment_history = summary.get('payment_history') or []
+            last_payment_map = {}
+            for payment in payment_history:
+                fee_name = payment.get('fee_name') or ''
+                payment_date = payment.get('payment_date')
+                if payment_date:
+                    last_payment_map[fee_name] = str(payment_date)
+
             total_expected = total_paid = total_balance = 0
-            for row in results:
+            for row in summary.get('fee_details', []):
                 fee_name = row.get('fee_name') or ''
                 expected_amt = float(row.get('expected_amount') or 0)
                 paid_amt = float(row.get('paid_amount') or 0)
-
-                if 'tuition' in fee_name.lower():
-                    cls_lower = (student_class or '').lower()
-                    if 'nursery' in cls_lower or 'reception' in cls_lower:
-                        expected_amt = 45000.0
-                    else:
-                        expected_amt = 85000.0
-
-                balance_val = expected_amt - paid_amt
-
+                balance_val = float(row.get('balance') or 0)
                 tree.insert('', 'end', values=(
                     fee_name,
                     format_currency(expected_amt),
                     format_currency(paid_amt),
                     format_currency(balance_val),
-                    row.get('last_payment') or 'None'
+                    last_payment_map.get(fee_name, 'Opening Balance' if fee_name == 'Carried Forward Fee Balance' else 'None')
                 ))
                 total_expected += expected_amt
                 total_paid += paid_amt
                 total_balance += balance_val
-
-            # Include carried-over balance from previous term as opening balance for current term.
-            try:
-                carry_q = """
-                    SELECT COALESCE(SUM(carried_balance), 0) as carried_balance
-                    FROM student_term_fee_rollovers
-                    WHERE student_id = %s AND to_academic_year = %s AND to_term = %s
-                """
-                carry_res = db.execute_query(
-                    carry_q,
-                    (student_id, config.Config.CURRENT_ACADEMIC_YEAR, config.Config.CURRENT_TERM),
-                    fetch=True
-                )
-                carried_balance = float(carry_res[0].get('carried_balance', 0) or 0) if carry_res else 0.0
-            except Exception:
-                carried_balance = 0.0
-
-            if carried_balance > 0:
-                tree.insert('', 'end', values=(
-                    'Carried Balance',
-                    format_currency(carried_balance),
-                    format_currency(0),
-                    format_currency(carried_balance),
-                    'Opening Balance'
-                ))
-                total_expected += carried_balance
-                total_balance += carried_balance
             
             # Add totals row
             tree.insert('', 'end', values=(
                 'TOTAL',
-                format_currency(total_expected),
-                format_currency(total_paid),
-                format_currency(total_balance),
+                format_currency(float(summary.get('total_due') or total_expected)),
+                format_currency(float(summary.get('total_paid') or total_paid)),
+                format_currency(float(summary.get('balance') or total_balance)),
                 ''
             ))
             
@@ -2613,8 +2696,16 @@ class FinanceTab:
     def generate_financial_report(self):
         """Generate financial report"""
         try:
-            from utils.pdf_generator import generate_financial_report
-            filename = generate_financial_report()
+            from pathlib import Path
+            from reports.generators.financial_report import generate_financial_summary_report
+
+            academic_year, term = self._current_finance_view()
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            safe_term = re.sub(r'[^A-Za-z0-9_-]+', '_', term).strip('_') or 'term'
+            reports_dir = Path(config.Config.PATHS.get('reports', config.Config.USER_DATA_DIR))
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            filename = reports_dir / f"financial_summary_{academic_year}_{safe_term}_{timestamp}.pdf"
+            generate_financial_summary_report(str(filename), academic_year=academic_year, term=term)
             messagebox.showinfo("Success", f"Financial report generated:\n{filename}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to generate report: {str(e)}")
@@ -2622,7 +2713,62 @@ class FinanceTab:
     def export_financial_data(self):
         """Export financial data to Excel"""
         try:
-            messagebox.showinfo("Export", "Financial data would be exported to Excel")
+            import csv
+            from pathlib import Path
+            from models.finance import FinancialManager
+
+            academic_year, term = self._current_finance_view()
+            summary = FinancialManager.get_term_financial_summary(academic_year, term)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            safe_term = re.sub(r'[^A-Za-z0-9_-]+', '_', term).strip('_') or 'term'
+            exports_dir = Path(config.Config.PATHS.get('exports', config.Config.USER_DATA_DIR))
+            exports_dir.mkdir(parents=True, exist_ok=True)
+            filename = exports_dir / f"financial_summary_{academic_year}_{safe_term}_{timestamp}.csv"
+
+            with open(filename, 'w', newline='', encoding='utf-8') as handle:
+                writer = csv.writer(handle)
+                writer.writerow(['Academic Year', academic_year])
+                writer.writerow(['Term', term])
+                writer.writerow(['Selected Term Income', summary.get('total_income', 0)])
+                writer.writerow(['Selected Term Expenses', summary.get('total_expenses', 0)])
+                writer.writerow(['Selected Term Net', summary.get('net_balance', 0)])
+                writer.writerow(['Academic Year Income', summary.get('academic_year_total_income', 0)])
+                writer.writerow(['Academic Year Expenses', summary.get('academic_year_total_expenses', 0)])
+                writer.writerow(['Academic Year Net', summary.get('academic_year_net_balance', 0)])
+                writer.writerow(['Outstanding Fees', summary.get('outstanding_fees', 0)])
+                writer.writerow([])
+                writer.writerow(['Monthly Breakdown'])
+                writer.writerow(['Month', 'Income', 'Expenses', 'Net', 'Payments'])
+                for row in summary.get('monthly_breakdown') or []:
+                    writer.writerow([
+                        row.get('month'),
+                        row.get('income', 0),
+                        row.get('expenses', 0),
+                        row.get('net', 0),
+                        row.get('payment_count', 0)
+                    ])
+                writer.writerow([])
+                writer.writerow(['Fees Collected by Type'])
+                writer.writerow(['Fee Type', 'Configured Terms', 'Selected Term', 'Academic Year', 'Payments'])
+                for row in summary.get('fee_totals') or []:
+                    writer.writerow([
+                        row.get('fee_name'),
+                        row.get('fee_terms', ''),
+                        row.get('term_collected', 0),
+                        row.get('academic_year_collected', 0),
+                        row.get('term_payment_count', 0)
+                    ])
+                writer.writerow([])
+                writer.writerow(['Expense Categories'])
+                writer.writerow(['Category', 'Count', 'Total'])
+                for row in summary.get('expense_categories') or []:
+                    writer.writerow([
+                        row.get('category'),
+                        row.get('expense_count', 0),
+                        row.get('total_amount', 0)
+                    ])
+
+            messagebox.showinfo("Export", f"Term financial data exported:\n{filename}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export data: {str(e)}")
     
@@ -2867,8 +3013,7 @@ class FinanceTab:
                 """
                 INSERT INTO teacher_salary_monthly (teacher_id, payroll_month, is_paid)
                 VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE is_paid = VALUES(is_paid)
-                """,
+                """ + db.upsert_clause(("teacher_id", "payroll_month"), set_new=("is_paid",)),
                 (teacher_id, payroll_month, is_paid)
             )
             messagebox.showinfo("Success", "Salary paid status updated")

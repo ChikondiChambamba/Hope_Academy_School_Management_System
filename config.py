@@ -2,9 +2,11 @@
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 
@@ -46,12 +48,15 @@ USER_DATA_DIR = _resolve_user_data_dir()
 
 
 # Database configuration
+# Defaults for a local development install. Real deployments should set the
+# HOPE_DB_* environment variables or save credentials via Edit > Preferences
+# (persisted to user_settings.json in USER_DATA_DIR, which overrides these).
 DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",
-    "password": "123456",  # Set your MySQL password here
-    "database": "school_management",
-    "port": 3306,
+    "host": os.getenv("HOPE_DB_HOST", "localhost"),
+    "user": os.getenv("HOPE_DB_USER", "root"),
+    "password": os.getenv("HOPE_DB_PASSWORD", "123456"),
+    "database": os.getenv("HOPE_DB_NAME", "school_management"),
+    "port": int(os.getenv("HOPE_DB_PORT", "3306")),
     "autocommit": True,
 }
 
@@ -85,6 +90,14 @@ for path in PATHS.values():
 class Config:
     """Backwards-compatible application configuration."""
 
+    # Where school data lives, chosen on first launch:
+    #   "sqlite" - a single file on this computer (default, nothing to install)
+    #   "mysql"  - an existing MySQL server (DB_CONFIG)
+    #   None     - not chosen yet; the first-run screen asks.
+    DB_BACKEND = os.getenv("HOPE_DB_BACKEND") or None
+    SQLITE_FILENAME = "school_data.db"
+    SQLITE_PATH = None  # None -> USER_DATA_DIR / SQLITE_FILENAME
+
     BASE_DIR = BASE_DIR
     RESOURCE_DIR = RESOURCE_DIR
     USER_DATA_DIR = USER_DATA_DIR
@@ -92,10 +105,8 @@ class Config:
     PATHS = PATHS
 
     APP_NAME = APP_CONFIG.get("name", "Application")
-    VERSION = APP_CONFIG.get("version", "2.0.0")
-    AUTHOR = APP_CONFIG.get("author", "Chikondi Chambamba")
-
-    from datetime import datetime
+    VERSION = APP_CONFIG.get("version", "1.0.0")
+    AUTHOR = APP_CONFIG.get("author", "School Admin")
 
     CURRENT_ACADEMIC_YEAR = APP_CONFIG.get("academic_year", str(datetime.now().year))
     ACADEMIC_YEAR_START_DATE = APP_CONFIG.get("academic_year_start_date", None)
@@ -104,7 +115,8 @@ class Config:
     TERM_START_DATE = APP_CONFIG.get("term_start_date", None)
     PREVIOUS_ACADEMIC_YEAR = APP_CONFIG.get("previous_academic_year", None)
     PREVIOUS_TERM = APP_CONFIG.get("previous_term", None)
-    CURRENT_USER_ROLE = APP_CONFIG.get("default_role", "Administrator")
+    # Derived from CURRENT_USER by _sync_current_role(); never set directly.
+    CURRENT_USER_ROLE = None
     CURRENT_TERM = APP_CONFIG.get("default_term", "Term 1")
     TERMS = ["Term 1", "Term 2", "Term 3"]
     TERM_SCHEDULE = APP_CONFIG.get(
@@ -147,6 +159,9 @@ class Config:
 
     USERS = {}
     CURRENT_USER = None
+    # Off: the program opens straight into the full application (single-user PC).
+    # On: users must log in, and each user's role limits what they can see.
+    REQUIRE_LOGIN = False
 
     PERMISSIONS = {
         "Administrator": {
@@ -159,6 +174,8 @@ class Config:
             "reports",
             "financial_reports",
             "student_finance",
+            "settings",
+            "manage_users",
         },
         "Headteacher": {"dashboard", "students", "teachers", "attendance", "reports"},
         "Finance": {"dashboard", "finance", "financial_reports", "student_finance"},
@@ -174,8 +191,6 @@ class Config:
     @staticmethod
     def _write_config_log(message: str, level: str = "INFO") -> None:
         try:
-            from datetime import datetime
-
             log_file = Config.get_log_file()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open(log_file, "a", encoding="utf-8") as handle:
@@ -185,8 +200,6 @@ class Config:
 
     @staticmethod
     def get_backup_filename() -> Path:
-        from datetime import datetime
-
         fname = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql"
         backup_dir = Path(Config.PATHS.get("backups", Config.USER_DATA_DIR / "backups"))
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -194,8 +207,6 @@ class Config:
 
     @staticmethod
     def get_export_filename(prefix: str = "export") -> Path:
-        from datetime import datetime
-
         fname = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         export_dir = Path(Config.PATHS.get("exports", Config.USER_DATA_DIR / "exports"))
         export_dir.mkdir(parents=True, exist_ok=True)
@@ -295,6 +306,14 @@ class Config:
                 if "DB_CONFIG" in data and isinstance(data["DB_CONFIG"], dict):
                     Config.DB_CONFIG.clear()
                     Config.DB_CONFIG.update(Config._normalize_db_config(data["DB_CONFIG"]))
+                if not os.getenv("HOPE_DB_BACKEND"):
+                    if data.get("DB_BACKEND") in ("sqlite", "mysql"):
+                        Config.DB_BACKEND = data["DB_BACKEND"]
+                    elif "DB_CONFIG" in data:
+                        # Settings written before SQLite support always meant MySQL.
+                        Config.DB_BACKEND = "mysql"
+                if data.get("SQLITE_PATH"):
+                    Config.SQLITE_PATH = data["SQLITE_PATH"]
 
                 if "UI" in data and isinstance(data["UI"], dict):
                     Config.UI.update(data["UI"])
@@ -310,7 +329,7 @@ class Config:
                 if "TERM_START_DATE" in data:
                     Config.TERM_START_DATE = data["TERM_START_DATE"]
                 if "CURRENT_TERM" in data:
-                    Config.CURRENT_TERM = data["CURRENT_TERM"]
+                    Config.CURRENT_TERM = Config.normalize_term_name(data["CURRENT_TERM"])
                 if "TERM_SCHEDULE" in data and isinstance(data["TERM_SCHEDULE"], dict):
                     normalized_schedule = {}
                     for term_name in Config.TERMS:
@@ -325,9 +344,9 @@ class Config:
                 if "PREVIOUS_ACADEMIC_YEAR" in data:
                     Config.PREVIOUS_ACADEMIC_YEAR = data["PREVIOUS_ACADEMIC_YEAR"]
                 if "PREVIOUS_TERM" in data:
-                    Config.PREVIOUS_TERM = data["PREVIOUS_TERM"]
-                if "CURRENT_USER_ROLE" in data:
-                    Config.CURRENT_USER_ROLE = data["CURRENT_USER_ROLE"]
+                    Config.PREVIOUS_TERM = Config.normalize_term_name(data["PREVIOUS_TERM"])
+                if "REQUIRE_LOGIN" in data:
+                    Config.REQUIRE_LOGIN = bool(data["REQUIRE_LOGIN"])
                 if "USERS" in data and isinstance(data["USERS"], dict):
                     normalized_users = {}
                     for username, value in data["USERS"].items():
@@ -336,8 +355,9 @@ class Config:
                         else:
                             normalized_users[username] = {"role": value, "password": None}
                     Config.USERS = normalized_users
-                if "CURRENT_USER" in data:
-                    Config.CURRENT_USER = data["CURRENT_USER"]
+                # CURRENT_USER / CURRENT_USER_ROLE are deliberately NOT restored:
+                # a session must start with a login, otherwise whoever opens the
+                # app inherits the last user's privileges.
 
                 Config._write_config_log(
                     f"Loaded user settings from '{path}'. "
@@ -362,13 +382,13 @@ class Config:
             Config._ensure_user_settings_home()
 
             def _serialize(value):
-                from datetime import date, datetime
-
                 if isinstance(value, (date, datetime)):
                     return value.strftime(Config.FILES.get("date_format", "%Y-%m-%d"))
                 return value
 
             payload = {
+                "DB_BACKEND": Config.DB_BACKEND,
+                "SQLITE_PATH": Config.SQLITE_PATH,
                 "DB_CONFIG": _serialize(dict(Config.DB_CONFIG)),
                 "UI": _serialize(dict(Config.UI)),
                 "CURRENT_ACADEMIC_YEAR": _serialize(Config.CURRENT_ACADEMIC_YEAR),
@@ -376,13 +396,12 @@ class Config:
                 "ACADEMIC_YEAR_END_DATE": _serialize(getattr(Config, "ACADEMIC_YEAR_END_DATE", None)),
                 "TERM_END_DATE": _serialize(Config.TERM_END_DATE),
                 "TERM_START_DATE": _serialize(getattr(Config, "TERM_START_DATE", None)),
-                "CURRENT_TERM": _serialize(getattr(Config, "CURRENT_TERM", None)),
+                "CURRENT_TERM": _serialize(Config.normalize_term_name(getattr(Config, "CURRENT_TERM", None))),
                 "TERM_SCHEDULE": _serialize(getattr(Config, "TERM_SCHEDULE", {})),
                 "PREVIOUS_ACADEMIC_YEAR": _serialize(getattr(Config, "PREVIOUS_ACADEMIC_YEAR", None)),
-                "PREVIOUS_TERM": _serialize(getattr(Config, "PREVIOUS_TERM", None)),
-                "CURRENT_USER_ROLE": _serialize(Config.CURRENT_USER_ROLE),
+                "PREVIOUS_TERM": _serialize(Config.normalize_term_name(getattr(Config, "PREVIOUS_TERM", None))),
+                "REQUIRE_LOGIN": bool(Config.REQUIRE_LOGIN),
                 "USERS": _serialize(getattr(Config, "USERS", {})),
-                "CURRENT_USER": _serialize(getattr(Config, "CURRENT_USER", None)),
             }
 
             with open(path, "w", encoding="utf-8") as handle:
@@ -403,11 +422,159 @@ class Config:
             return False
 
     @staticmethod
+    def sqlite_path() -> Path:
+        """Location of the SQLite database file."""
+        if Config.SQLITE_PATH:
+            return Path(Config.SQLITE_PATH).expanduser()
+        return Path(Config.PATHS.get("data", Config.USER_DATA_DIR)) / Config.SQLITE_FILENAME
+
+    @staticmethod
+    def storage_description() -> str:
+        """Plain-language description of where data is stored."""
+        if Config.DB_BACKEND == "sqlite":
+            return f"On this computer ({Config.sqlite_path()})"
+        if Config.DB_BACKEND == "mysql":
+            cfg = Config.DB_CONFIG
+            return f"MySQL server {cfg.get('host')}:{cfg.get('port')} / {cfg.get('database')}"
+        return "Not set up yet"
+
+    @staticmethod
     def get_term_date_range(term_name: str = None):
-        term_name = term_name or getattr(Config, "CURRENT_TERM", None)
+        term_name = Config.normalize_term_name(term_name or getattr(Config, "CURRENT_TERM", None))
         schedule = getattr(Config, "TERM_SCHEDULE", {}) or {}
         info = schedule.get(term_name, {}) if isinstance(schedule, dict) else {}
         return (info.get("start_date"), info.get("end_date"))
+
+    @staticmethod
+    def normalize_term_name(term_name: str = None):
+        """Normalize legacy term labels like '2' into canonical labels like 'Term 2'."""
+        raw = (term_name or "").strip()
+        if not raw:
+            return raw
+
+        terms = list(getattr(Config, "TERMS", []) or [])
+        lowered = raw.lower().replace(" ", "")
+        for index, canonical in enumerate(terms, start=1):
+            canonical_text = str(canonical or "").strip()
+            canonical_lower = canonical_text.lower().replace(" ", "")
+            if lowered in {canonical_lower, f"term{index}", f"t{index}", str(index)}:
+                return canonical_text
+
+        return raw
+
+    @staticmethod
+    def get_term_aliases(term_name: str = None) -> list[str]:
+        """Return canonical and legacy aliases that should map to the same configured term."""
+        canonical = Config.normalize_term_name(term_name or getattr(Config, "CURRENT_TERM", None))
+        if not canonical:
+            return []
+
+        aliases: list[str] = []
+        if canonical not in aliases:
+            aliases.append(canonical)
+
+        terms = list(getattr(Config, "TERMS", []) or [])
+        for index, configured in enumerate(terms, start=1):
+            configured_name = str(configured or "").strip()
+            if configured_name == canonical:
+                for alias in (str(index), f"Term {index}", f"Term{index}", f"T{index}", f"t{index}"):
+                    if alias not in aliases:
+                        aliases.append(alias)
+                break
+
+        return aliases
+
+    @staticmethod
+    def parse_config_date(value):
+        """Parse a configured YYYY-MM-DD string into a date object."""
+        if not value:
+            return None
+        try:
+            if hasattr(value, "strftime"):
+                return value
+            return datetime.strptime(str(value), Config.FILES.get("date_format", "%Y-%m-%d")).date()
+        except Exception:
+            return None
+
+    @staticmethod
+    def get_term_date_bounds(term_name: str = None):
+        """Return configured term start/end as date objects."""
+        start_raw, end_raw = Config.get_term_date_range(term_name)
+        return (Config.parse_config_date(start_raw), Config.parse_config_date(end_raw))
+
+    @staticmethod
+    def get_term_for_date(value):
+        """Infer the configured term containing a date."""
+        target_date = Config.parse_config_date(value)
+        if not target_date:
+            return None
+        for term_name in getattr(Config, "TERMS", []):
+            start_date, end_date = Config.get_term_date_bounds(term_name)
+            if start_date and end_date and start_date <= target_date <= end_date:
+                return term_name
+        return None
+
+    @staticmethod
+    def next_academic_year(academic_year: str) -> str:
+        """Return the academic year after `academic_year`.
+
+        Supports "2025-2026" -> "2026-2027", "2025/26" -> "2026/27" and "2025" -> "2026".
+        """
+        raw = (academic_year or "").strip()
+        match = re.fullmatch(r"(\d{4})\s*([-/])\s*(\d{2}|\d{4})", raw)
+        if match:
+            start, sep, end = match.groups()
+            next_start = int(start) + 1
+            next_end = (int(end) + 1) % 100 if len(end) == 2 else int(end) + 1
+            return f"{next_start}{sep}{next_end:02d}" if len(end) == 2 else f"{next_start}{sep}{next_end}"
+        if re.fullmatch(r"\d{4}", raw):
+            return str(int(raw) + 1)
+        raise ValueError(f"Unrecognised academic year format: {academic_year!r} (expected e.g. 2025-2026)")
+
+    @staticmethod
+    def next_term_period(academic_year: str, term: str) -> tuple:
+        """Return (academic_year, term) of the period that follows `term`.
+
+        After the last configured term the academic year moves forward and the
+        first term begins again.
+        """
+        terms = list(Config.TERMS)
+        term = Config.normalize_term_name(term)
+        if term not in terms:
+            raise ValueError(f"Unknown term {term!r}; expected one of {', '.join(terms)}")
+        index = terms.index(term)
+        if index + 1 < len(terms):
+            return academic_year, terms[index + 1]
+        return Config.next_academic_year(academic_year), terms[0]
+
+    @staticmethod
+    def academic_year_date_cutoff():
+        """Latest date belonging to the current academic year's configuration.
+
+        Used when the year advances: any configured date on or before this
+        cutoff belongs to the old year and must not filter the new year's data.
+        """
+        candidates = [Config.parse_config_date(Config.ACADEMIC_YEAR_END_DATE)]
+        for info in (Config.TERM_SCHEDULE or {}).values():
+            if isinstance(info, dict):
+                candidates.append(Config.parse_config_date(info.get("start_date")))
+                candidates.append(Config.parse_config_date(info.get("end_date")))
+        candidates = [d for d in candidates if d]
+        return max(candidates) if candidates else None
+
+    @staticmethod
+    def clear_stale_term_dates(schedule: dict, cutoff) -> dict:
+        """Blank schedule dates on or before `cutoff` (dates of the previous academic year)."""
+        cleaned = {}
+        for term_name in Config.TERMS:
+            info = (schedule or {}).get(term_name) or {}
+            out = {}
+            for key in ("start_date", "end_date"):
+                value = info.get(key)
+                parsed = Config.parse_config_date(value)
+                out[key] = None if (cutoff and parsed and parsed <= cutoff) else (value or None)
+            cleaned[term_name] = out
+        return cleaned
 
     @staticmethod
     def get_users():
@@ -450,28 +617,51 @@ class Config:
 
     @staticmethod
     def add_user(username: str, role: str, password: str = None):
-        if not username:
+        if not username or role not in Config.PERMISSIONS:
+            return False
+        first_user = not Config.has_users()
+        if first_user and role != "Administrator":
+            # Otherwise the bootstrap session would lock itself out of user management.
             return False
         Config.USERS[username] = {
             "role": role,
             "password": Config._hash_password(password) if password else None,
         }
+        if first_user:
+            # The bootstrap administrator who created the account continues as it.
+            Config.CURRENT_USER = username
+            Config._sync_current_role()
         return Config.save_user_settings()
+
+    @staticmethod
+    def would_remove_last_admin(username: str, new_role: str = None) -> bool:
+        """True if removing/re-roling `username` leaves other users with no Administrator."""
+        users = Config.get_users()
+        if users.get(username) != "Administrator":
+            return False
+        if new_role == "Administrator":
+            return False
+        other_admins = [u for u, r in users.items() if u != username and r == "Administrator"]
+        others_remain = len(users) > 1 or new_role is not None
+        return others_remain and not other_admins
 
     @staticmethod
     def remove_user(username: str):
         if username in Config.USERS:
             del Config.USERS[username]
+            if Config.CURRENT_USER == username:
+                Config.CURRENT_USER = None
+            Config._sync_current_role()
             return Config.save_user_settings()
         return False
 
     @staticmethod
     def set_current_user(username: str):
+        """Mark `username` as logged in. Callers must verify credentials first."""
         if username and username in Config.USERS:
             Config.CURRENT_USER = username
-            info = Config.USERS.get(username)
-            Config.CURRENT_USER_ROLE = info.get("role") if isinstance(info, dict) else info
-            return Config.save_user_settings()
+            Config._sync_current_role()
+            return True
         return False
 
     @staticmethod
@@ -482,8 +672,7 @@ class Config:
                 info = {"role": info, "password": None}
             info["role"] = role
             Config.USERS[username] = info
-            if Config.CURRENT_USER == username:
-                Config.CURRENT_USER_ROLE = role
+            Config._sync_current_role()
             return Config.save_user_settings()
         return False
 
@@ -512,14 +701,44 @@ class Config:
         return Config._verify_password(stored, password)
 
     @staticmethod
+    def has_users() -> bool:
+        return bool(Config.USERS)
+
+    @staticmethod
+    def _sync_current_role() -> None:
+        """Derive CURRENT_USER_ROLE from CURRENT_USER (single source of truth).
+
+        Without the login requirement, or with no users configured, the app
+        runs as Administrator. Otherwise privileges come only from the
+        logged-in user.
+        """
+        user = Config.CURRENT_USER
+        info = (Config.USERS or {}).get(user) if user else None
+        if info is not None:
+            Config.CURRENT_USER_ROLE = info.get("role") if isinstance(info, dict) else info
+        elif not Config.login_required():
+            Config.CURRENT_USER = None
+            Config.CURRENT_USER_ROLE = "Administrator"
+        else:
+            Config.CURRENT_USER = None
+            Config.CURRENT_USER_ROLE = None
+
+    @staticmethod
+    def login_required() -> bool:
+        """True when the program must ask for a password before showing any data."""
+        return bool(Config.REQUIRE_LOGIN) and Config.has_users()
+
+    @staticmethod
+    def logout() -> None:
+        Config.CURRENT_USER = None
+        Config._sync_current_role()
+
+    @staticmethod
     def has_permission(feature: str) -> bool:
-        try:
-            role = getattr(Config, "CURRENT_USER_ROLE", "Administrator")
-            allowed = Config.PERMISSIONS.get(role, set())
-            return feature in allowed
-        except Exception:
-            return False
+        role = getattr(Config, "CURRENT_USER_ROLE", None)
+        return feature in Config.PERMISSIONS.get(role, set())
 
 
-# Load user settings at import time
+# Load user settings at import time, then derive the (logged-out) role.
 Config.load_user_settings()
+Config._sync_current_role()

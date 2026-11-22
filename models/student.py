@@ -306,16 +306,8 @@ class Student:
     @classmethod
     def from_dict(cls, data: Dict) -> 'Student':
         """Create Student instance from dictionary"""
-        # Handle database field name differences
-        if 'class' in data:
-            data['class_name'] = data.pop('class')
-        
-        # Handle None values
-        for key, value in data.items():
-            if value is None and key in ['birth_date', 'enrollment_date']:
-                data[key] = None
-        
-        return cls(**data)
+        from .row_mapping import from_row
+        return from_row(cls, data)   # maps the `class` column to class_name
     
     @classmethod
     def _apply_financial_totals(cls, students: List['Student'], academic_year: str = None) -> List['Student']:
@@ -335,8 +327,7 @@ class Student:
                 row = bal_map.get(int(s.student_id)) if s.student_id is not None else None
                 if not row:
                     continue
-                carried = float(row.get('carried_balance') or 0)
-                s.total_due = float(row.get('total_due') or 0) + carried
+                s.total_due = float(row.get('opening_balance') or 0)
                 s.total_paid = float(row.get('total_paid') or 0)
                 s.balance = float(row.get('balance') or 0)
             return students
@@ -501,186 +492,19 @@ class StudentManager:
     
     @staticmethod
     def get_student_financial_summary(student_id: int) -> Dict:
-        """Get financial summary for student"""
-        student = Student.get_by_id(student_id)
-        if not student:
-            return {}
-
-        # Build fee details and compute expected amounts with exemption rules.
-        fee_details = student.get_fee_details()
-
-        # Determine tuition by class
-        tuition_map = {
-            'nursery': 45000.0,
-            'reception': 45000.0
-        }
-
-        # Default grade tuition
-        grade_tuition = 85000.0
-
-        cls_lower = (student.class_name or '').strip().lower()
-        if any(k in cls_lower for k in ('nursery', 'reception')):
-            tuition_amount = tuition_map.get('nursery')
-        else:
-            tuition_amount = grade_tuition
-
-        # Load any exemptions for this student (waived fee types)
-        try:
-            ex_rows = db.execute_query(
-                "SELECT fee_type_id FROM student_fee_exemptions WHERE student_id = %s",
-                (student_id,),
-                fetch=True
-            )
-            exemptions = {r['fee_type_id'] for r in ex_rows} if ex_rows else set()
-        except Exception:
-            exemptions = set()
-
-        # Determine if the student has paid any tuition already
-        paid_tuition_fee_type_ids = set()
-        for fd in fee_details:
-            if fd.get('fee_name') and 'tuition' in fd.get('fee_name').lower() and float(fd.get('paid_amount', 0)) > 0:
-                fid = fd.get('fee_type_id')
-                if fid is not None:
-                    paid_tuition_fee_type_ids.add(fid)
-
-        # Pull fee type amounts for the fee_details list
-        fee_type_ids = [fd.get('fee_type_id') for fd in fee_details if fd.get('fee_type_id') is not None]
-        fee_type_map = {}
-        if fee_type_ids:
-            try:
-                placeholders = ",".join(["%s"] * len(fee_type_ids))
-                q = f"SELECT fee_type_id, fee_name, amount FROM fee_types WHERE fee_type_id IN ({placeholders})"
-                rows = db.execute_query(q, tuple(fee_type_ids), fetch=True) or []
-                fee_type_map = {r['fee_type_id']: r for r in rows}
-            except Exception:
-                fee_type_map = {}
-
-        adjusted_fee_details = []
-
-        for fd in fee_details:
-            fid = fd.get('fee_type_id')
-            if fid is None:
-                continue
-
-            ft = fee_type_map.get(fid, {})
-            fee_name = ft.get('fee_name') or fd.get('fee_name') or ''
-            fname_l = fee_name.lower()
-
-            # Base amount from fee type (fallback to expected_amount from query)
-            base_amount = float(ft.get('amount') or fd.get('expected_amount') or 0)
-
-            # skip exempted fee types
-            if fid in exemptions:
-                amount = 0.0
-            # Registration and Uniform only apply to new students
-            elif ('registration' in fname_l or 'uniform' in fname_l) and not getattr(student, 'is_new', True):
-                amount = 0.0
-            # Tuition override
-            elif 'tuition' in fname_l:
-                if paid_tuition_fee_type_ids and fid not in paid_tuition_fee_type_ids:
-                    amount = 0.0
-                else:
-                    amount = float(tuition_amount)
-            else:
-                amount = base_amount
-
-            paid = float(fd.get('paid_amount', 0) or 0)
-            balance = amount - paid
-            adjusted_fee_details.append({
-                'fee_type_id': fid,
-                'fee_name': fee_name,
-                'expected_amount': amount,
-                'paid_amount': paid,
-                'balance': balance
-            })
-
-        # Include any fee types that appear in payments but not in current fee_details
-        payment_history = StudentManager.get_payment_history(student_id)
-        paid_fee_type_ids = {p.get('fee_type_id') for p in payment_history if p.get('fee_type_id') is not None}
-        missing_ids = [fid for fid in paid_fee_type_ids if fid not in {d.get('fee_type_id') for d in adjusted_fee_details}]
-        if missing_ids:
-            try:
-                placeholders = ",".join(["%s"] * len(missing_ids))
-                q = f"SELECT fee_type_id, fee_name FROM fee_types WHERE fee_type_id IN ({placeholders})"
-                rows = db.execute_query(q, tuple(missing_ids), fetch=True) or []
-                name_map = {r['fee_type_id']: r.get('fee_name') for r in rows}
-            except Exception:
-                name_map = {}
-            for fid in missing_ids:
-                paid_sum = sum(float(p.get('amount_paid') or 0) for p in payment_history if p.get('fee_type_id') == fid)
-                fee_name = name_map.get(fid) or f"Fee {fid}"
-                adjusted_fee_details.append({
-                    'fee_type_id': fid,
-                    'fee_name': f"{fee_name} (Other Term)",
-                    'expected_amount': paid_sum,
-                    'paid_amount': paid_sum,
-                    'balance': 0.0
-                })
-
-        # Add carried-over balance from the previous term into this term's opening balance.
-        try:
-            carry_q = """
-                SELECT COALESCE(SUM(carried_balance), 0) as carried_balance
-                FROM student_term_fee_rollovers
-                WHERE student_id = %s AND to_academic_year = %s AND to_term = %s
-            """
-            carry_res = db.execute_query(
-                carry_q,
-                (student_id, config.Config.CURRENT_ACADEMIC_YEAR, config.Config.CURRENT_TERM),
-                fetch=True
-            )
-            carried_balance = float(carry_res[0].get('carried_balance', 0) or 0) if carry_res else 0.0
-        except Exception:
-            carried_balance = 0.0
-
-        if carried_balance > 0:
-            adjusted_fee_details.append({
-                'fee_name': 'Carried Balance',
-                'expected_amount': carried_balance,
-                'paid_amount': 0.0,
-                'balance': carried_balance
-            })
-
-        # Compute totals from the final adjusted fee rows used by the preview UI.
-        # This avoids schema-specific query failures from blanking totals in preview.
-        total_due = sum(float(d.get('expected_amount') or 0) for d in adjusted_fee_details)
-        total_paid = sum(float(d.get('paid_amount') or 0) for d in adjusted_fee_details)
-        balance = total_due - total_paid
-
-        summary = {
-            'student_name': f"{student.first_name} {student.last_name}",
-            'student_code': student.student_code,
-            'class': student.class_name,
-            'total_due': total_due,
-            'total_paid': total_paid,
-            'balance': balance,
-            'carried_balance': carried_balance,
-            'fee_details': adjusted_fee_details,
-            'payment_history': payment_history
-        }
-
-        return summary
+        """Get financial summary for student from the centralized finance engine."""
+        from models.finance import FinancialManager
+        return FinancialManager.get_student_financial_snapshot(
+            student_id,
+            academic_year=config.Config.CURRENT_ACADEMIC_YEAR,
+            term=config.Config.CURRENT_TERM
+        )
     
     @staticmethod
     def get_payment_history(student_id: int) -> List[Dict]:
         """Get payment history for student"""
-        try:
-            query = """
-                SELECT 
-                    sf.payment_date,
-                    sf.fee_type_id,
-                    ft.fee_name,
-                    sf.amount_paid,
-                    sf.payment_method,
-                    sf.receipt_number
-                FROM student_fees sf
-                JOIN fee_types ft ON sf.fee_type_id = ft.fee_type_id
-                WHERE sf.student_id = %s
-                ORDER BY sf.payment_date DESC
-            """
-            return db.execute_query(query, (student_id,), fetch=True)
-        except:
-            return []
+        from models.finance import FinancialManager
+        return FinancialManager.get_student_payment_history(student_id)
     
     @staticmethod
     def record_payment(student_id: int, fee_type_id: int, amount: float, 

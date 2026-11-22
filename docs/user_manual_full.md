@@ -27,7 +27,7 @@ python -m venv .venv
 2. Install Python dependencies:
 
 ```powershell
-pip install -r requirement.txt
+pip install -r requirements.txt
 ```
 
 Database initialization

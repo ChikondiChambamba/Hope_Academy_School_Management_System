@@ -10,16 +10,7 @@ def student_is_new_available() -> bool:
     global _HAS_STUDENT_IS_NEW
     if _HAS_STUDENT_IS_NEW is None:
         try:
-            q = """
-                SELECT 1
-                FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE()
-                  AND TABLE_NAME = 'students'
-                  AND COLUMN_NAME = 'is_new'
-                LIMIT 1
-            """
-            res = db.execute_query(q, fetch=True)
-            _HAS_STUDENT_IS_NEW = bool(res)
+            _HAS_STUDENT_IS_NEW = db.column_exists('students', 'is_new')
         except Exception:
             _HAS_STUDENT_IS_NEW = False
     return _HAS_STUDENT_IS_NEW

@@ -262,47 +262,19 @@ def get_upcoming_events(days_ahead: int = 30) -> List[Dict]:
     
     return events
 
-def run_database_maintenance():
-    """Run database maintenance tasks"""
+def run_database_maintenance() -> tuple:
+    """Check the database for damage and tidy it up. Never deletes records.
+
+    Returns (ok, message).
+    """
     try:
-        print("Running database maintenance...")
-        
-        # Balances are computed dynamically; no stored balance column is required.
-        print("  Skipping student balance recalculation (computed dynamically)...")
-        
-        # Update inventory total values
-        print("  Updating inventory values...")
-        query = "UPDATE inventory_items SET total_value = quantity * unit_price"
-        db.execute_query(query)
-        
-        # Clean up old temporary data
-        print("  Cleaning up old data...")
-        # Delete attendance records older than 2 years
-        two_years_ago = date.today() - timedelta(days=730)
-        query = "DELETE FROM attendance WHERE attendance_date < %s"
-        db.execute_query(query, (two_years_ago,))
-        
-        # Archive old student records (inactive for more than 3 years)
-        three_years_ago = date.today() - timedelta(days=1095)
-        query = """
-            UPDATE students 
-            SET is_active = 0 
-            WHERE is_active = 1 
-                AND enrollment_date < %s
-                AND student_id NOT IN (
-                    SELECT DISTINCT student_id 
-                    FROM student_fees 
-                    WHERE payment_date > %s
-                )
-        """
-        db.execute_query(query, (three_years_ago, three_years_ago))
-        
-        print("Database maintenance completed successfully.")
-        return True
-        
+        if not db.integrity_ok():
+            return False, ("The database reported a problem. Restore the most recent backup "
+                           "(File > Restore Database) and contact support.")
+        db.optimize()
+        return True, "The database was checked and is in good order."
     except Exception as e:
-        print(f"Database maintenance failed: {e}")
-        return False
+        return False, f"Maintenance could not be completed: {e}"
 
 def export_table_to_csv(table_name: str, output_file: str) -> bool:
     """Export database table to CSV file"""

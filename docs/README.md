@@ -133,8 +133,7 @@ Hope_Academy_School_Management_System/
 │   ├── finance.py
 │   ├── attendance.py
 │   ├── reports_tab.py
-│   ├── dialogs.py
-│   └── validators.py
+│   └── dialogs.py
 │
 ├── utils/                      # Utilities
 │   ├── helpers.py

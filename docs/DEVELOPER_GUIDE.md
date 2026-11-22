@@ -101,7 +101,6 @@ python main.py
   - `main_window.py`: Main application window
   - `dashboard.py`, `students.py`, etc.: Tab implementations
   - `dialogs.py`: Modal dialogs
-  - `validators.py`: UI validation
 - **When to modify**: UI changes, new features, user workflows
 
 #### `utils/`
@@ -595,14 +594,11 @@ def test_student_save_and_retrieve():
 ### Running Tests
 
 ```bash
-# Run all tests
-python -m pytest tests/
+# Run all tests (no database needed: tests/_support.py fakes it)
+python -m unittest discover -s tests -t .
 
-# Run specific test file
-python -m pytest tests/test_student_model.py
-
-# Run with coverage
-python -m pytest --cov=models tests/
+# Run one test module
+python -m unittest tests.test_config_auth
 ```
 
 ---
@@ -918,3 +914,26 @@ TERM_END_DATE = config.Config.TERM_END_DATE
 **Document Version**: 1.0  
 **Last Updated**: January 2026
 
+
+## Storage backends (SQLite and MySQL)
+
+The program stores data either in a single SQLite file on the computer (the default, chosen on the
+first-launch Welcome screen) or on a MySQL server. `config.Config.DB_BACKEND` holds the choice
+(`"sqlite"` / `"mysql"`); installs whose settings predate SQLite support resolve to MySQL.
+
+- All code uses `from database.connection import db`; it forwards to `database/sqlite_backend.py` or
+  `database/mysql_backend.py`. Nothing connects until first use.
+- Write SQL in MySQL dialect with `%s` placeholders. On SQLite the backend translates placeholders,
+  `%%` and `INSERT IGNORE`, and provides `CONCAT`, `YEAR`, `MONTH`, `DAY`, `CURDATE`, `NOW` and
+  `DATE_FORMAT` with MySQL semantics.
+- Constructs that differ between the dialects go through helpers instead of raw SQL:
+  `db.group_concat_distinct(expr, "', '")`, `db.upsert_clause(conflict_cols, set_new=..., set_sql=...)`,
+  `db.column_exists(table, col)`, `db.table_exists(table)`, `db.list_tables()`.
+- Use `* 100.0 / COUNT(*)` rather than `/ COUNT(*) * 100`: SQLite divides integers exactly like Python 2.
+- Schemas: `database/schema.sql` (MySQL) and `database/schema_sqlite.sql` (SQLite) must stay in step.
+  SQLite files are created and upgraded automatically (`PRAGMA user_version`; bump `SCHEMA_VERSION`
+  and add a step to `_MIGRATIONS` in `sqlite_backend.py`). For MySQL add an idempotent step to
+  `apply_db_changes.py`. Runtime `CREATE TABLE`/`ALTER` code must be skipped when `db.manages_schema`.
+- `scripts/mysql_to_sqlite.py [--switch]` copies a MySQL installation into a new SQLite file.
+- `tests/test_sqlite_integration.py` runs the real models, rollover, payroll, reports and backup code
+  against a temporary SQLite file; no server is needed for any test.

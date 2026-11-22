@@ -1,160 +1,173 @@
-"""Export/import utilities.
+"""Backup, restore and export.
 
-Features:
-- `backup_database` uses `mysqldump` when available, otherwise falls back
-  to exporting each table as CSV in a timestamped folder.
-- `restore_database` prefers `mysql` client; if not available it will
-  return False (manual restore recommended).
-- `export_all_data` writes per-table CSV files.
-- `import_from_excel` is a lightweight stub that suggests using pandas.
+* SQLite ("on this computer"): a backup is a consistent copy of the data
+  file; restoring swaps the file in after saving a safety copy of the current
+  one. The application also keeps automatic daily backups.
+* MySQL: uses the mysqldump / mysql tools from the MySQL installation.
 """
-from pathlib import Path
+import csv
+import logging
+import os
 import shutil
 import subprocess
-import csv
-from datetime import datetime
-import logging
-import config
+from datetime import datetime, date
+from pathlib import Path
+from typing import Optional, Tuple
 
+import config
 from database.connection import db
 
 logger = logging.getLogger(__name__)
 
+AUTO_BACKUP_PREFIX = "auto_"
+AUTO_BACKUPS_KEPT = 14
 
-def _db_credentials():
+
+def backup_extension() -> str:
+    return ".db" if config.Config.DB_BACKEND == "sqlite" else ".sql"
+
+
+def _backup_dir() -> Path:
+    path = Path(config.Config.PATHS['backups'])
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+# --- MySQL client tools -------------------------------------------------------
+
+def _mysql_tool(name: str) -> Optional[str]:
+    """Locate mysql/mysqldump on PATH or in the standard Windows install folders."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for base in (os.getenv("ProgramFiles", r"C:\Program Files"), os.getenv("ProgramFiles(x86)", "")):
+        if not base:
+            continue
+        for candidate in sorted(Path(base, "MySQL").glob(f"MySQL Server*/bin/{name}.exe"), reverse=True):
+            return str(candidate)
+    return None
+
+
+def _mysql_command(tool: str):
     cfg = config.Config.DB_CONFIG
-    return cfg.get('host', 'localhost'), cfg.get('user', ''), cfg.get('password', ''), cfg.get('database', '')
+    exe = _mysql_tool(tool)
+    if not exe:
+        raise RuntimeError(f"The MySQL '{tool}' program was not found on this computer.")
+    cmd = [exe, '-h', str(cfg.get('host', 'localhost')), '-P', str(cfg.get('port', 3306)), '-u', str(cfg.get('user', ''))]
+    env = dict(os.environ, MYSQL_PWD=str(cfg.get('password') or ''))  # keeps the password off the command line
+    return cmd, env
 
+
+# --- backup / restore ---------------------------------------------------------
 
 def backup_database(output_path: str = None) -> bool:
-    """Backup the database to a SQL dump (preferred) or CSV files (fallback).
-
-    Returns True on success.
-    """
-    host, user, password, database = _db_credentials()
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-    # Preferred: use mysqldump
-    mysqldump = shutil.which('mysqldump')
-    if mysqldump:
-        out_file = Path(output_path or (config.Config.PATHS['backups'] / f"{database}_backup_{timestamp}.sql"))
-        out_file.parent.mkdir(parents=True, exist_ok=True)
-
-        cmd = [mysqldump, '-h', host, '-u', user, f"-p{password}", database]
-        try:
-            with open(out_file, 'wb') as f:
-                subprocess.run(cmd, stdout=f, check=True)
-            logger.info(f"Database dumped to {out_file}")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"mysqldump failed: {e}")
-            # fallthrough to CSV fallback
-
-    # Fallback: export each table to CSV
+    """Write a full backup. Returns True on success."""
+    target = Path(output_path) if output_path else _backup_dir() / (
+        f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{backup_extension()}")
+    target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        out_dir = Path(output_path or (config.Config.PATHS['backups'] / f"{database}_csv_export_{timestamp}"))
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        # Get list of tables
-        q = "SELECT table_name FROM information_schema.tables WHERE table_schema = %s"
-        tables = db.execute_query(q, (database,), fetch=True)
-        for t in tables:
-            # column name may vary; pick first value
-            table_name = next(iter(t.values()))
-            rows = db.execute_query(f"SELECT * FROM `{table_name}`", fetch=True)
-            if rows is None:
-                rows = []
-
-            if rows:
-                cols = list(rows[0].keys())
-            else:
-                # Get column names via zero-row fetch
-                cols = []
-            csv_path = out_dir / f"{table_name}.csv"
-            with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-                if cols:
-                    writer = csv.DictWriter(csvfile, fieldnames=cols)
-                    writer.writeheader()
-                    writer.writerows(rows)
-                else:
-                    # Empty table, still create headerless file
-                    csvfile.write('')
-
-        logger.info(f"Exported tables to CSV in {out_dir}")
+        if db.is_sqlite:
+            db.backend.backup_to(target)
+        else:
+            cmd, env = _mysql_command('mysqldump')
+            cmd += ['--single-transaction', '--routines', '--triggers', config.Config.DB_CONFIG['database']]
+            with open(target, 'wb') as handle:
+                subprocess.run(cmd, stdout=handle, env=env, check=True)
+        logger.info(f"Database backed up to {target}")
         return True
     except Exception as e:
-        logger.exception(f"backup_database failed: {e}")
-        return False
-
-
-def restore_database(backup_file: str) -> bool:
-    """Restore database from SQL dump using `mysql` client if available.
-
-    If `mysql` client is not available, this function will return False.
-    """
-    host, user, password, database = _db_credentials()
-    mysql = shutil.which('mysql')
-    if mysql and Path(backup_file).is_file():
-        cmd = [mysql, '-h', host, '-u', user, f"-p{password}", database]
+        logger.exception(f"Backup failed: {e}")
         try:
-            with open(backup_file, 'rb') as f:
-                subprocess.run(cmd, stdin=f, check=True)
-            logger.info(f"Restored database from {backup_file}")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"mysql client failed to restore: {e}")
-            return False
-    else:
-        logger.error("mysql client not available or backup file missing; manual restore required")
+            if target.exists() and target.stat().st_size == 0:
+                target.unlink()
+        except OSError:
+            pass
         return False
 
 
-def export_all_data(output_dir: str = None) -> bool:
-    """Export all tables to CSV files under `output_dir`.
-
-    Returns True on success.
-    """
+def restore_database(backup_file: str) -> Tuple[bool, str]:
+    """Replace the current data with a backup. Returns (success, message)."""
+    source = Path(backup_file)
+    if not source.is_file():
+        return False, "The selected backup file does not exist."
     try:
-        host, user, password, database = _db_credentials()
-        out_dir = Path(output_dir or config.Config.PATHS['exports'])
-        out_dir.mkdir(parents=True, exist_ok=True)
+        if db.is_sqlite:
+            from database.sqlite_backend import is_school_database
+            if not is_school_database(source):
+                return False, "The selected file is not a backup made by this application."
+            current = config.Config.sqlite_path()
+            safety = _backup_dir() / f"before_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+            db.backend.backup_to(safety)
+            db.reset()
+            for suffix in ("-wal", "-shm"):
+                Path(f"{current}{suffix}").unlink(missing_ok=True)
+            shutil.copy2(source, current)
+            db.prepare()  # upgrades an older backup to the current schema
+            return True, f"Data restored. Your previous data was saved to:\n{safety}"
+        cmd, env = _mysql_command('mysql')
+        cmd.append(config.Config.DB_CONFIG['database'])
+        with open(source, 'rb') as handle:
+            subprocess.run(cmd, stdin=handle, env=env, check=True)
+        db.reset()
+        return True, "Database restored."
+    except Exception as e:
+        logger.exception(f"Restore failed: {e}")
+        return False, f"Restore failed: {e}"
 
-        q = "SELECT table_name FROM information_schema.tables WHERE table_schema = %s"
-        tables = db.execute_query(q, (database,), fetch=True)
-        for t in tables:
-            table_name = next(iter(t.values()))
-            rows = db.execute_query(f"SELECT * FROM `{table_name}`", fetch=True)
-            csv_path = out_dir / f"{table_name}.csv"
-            with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+
+def run_automatic_backup() -> Optional[Path]:
+    """Once per day, keep a copy of the SQLite data file (the newest 14 are kept)."""
+    if config.Config.DB_BACKEND != "sqlite" or not config.Config.sqlite_path().exists():
+        return None
+    folder = _backup_dir()
+    today = f"{AUTO_BACKUP_PREFIX}{date.today().strftime('%Y%m%d')}.db"
+    target = folder / today
+    if target.exists():
+        return None
+    if not backup_database(str(target)):
+        return None
+    autos = sorted(folder.glob(f"{AUTO_BACKUP_PREFIX}*.db"))
+    for old in autos[:-AUTO_BACKUPS_KEPT]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return target
+
+
+# --- export / import ----------------------------------------------------------
+
+def export_all_data(output_dir: str = None) -> Optional[Path]:
+    """Export every table to CSV in a new dated folder. Returns the folder, or None."""
+    try:
+        base = Path(output_dir) if output_dir else Path(config.Config.PATHS['exports'])
+        out_dir = base / f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for table_name in db.list_tables():
+            rows = db.execute_query(f"SELECT * FROM {table_name}", fetch=True) or []
+            with open(out_dir / f"{table_name}.csv", 'w', newline='', encoding='utf-8-sig') as handle:
                 if rows:
-                    cols = list(rows[0].keys())
-                    writer = csv.DictWriter(csvfile, fieldnames=cols)
+                    writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
                     writer.writeheader()
                     writer.writerows(rows)
-                else:
-                    # Create empty file for table with no rows
-                    csvfile.write('')
-
         logger.info(f"Exported all tables to {out_dir}")
-        return True
+        return out_dir
     except Exception as e:
         logger.exception(f"export_all_data failed: {e}")
-        return False
+        return None
 
 
-def import_from_excel(file_path: str) -> bool:
-    """Import data from Excel - lightweight stub.
-
-    For robust Excel import, install `pandas` and `openpyxl` and implement
-    mapping logic. This stub returns False and logs guidance.
-    """
-    logger.error("import_from_excel not implemented. Use pandas + openpyxl to implement this feature.")
-    return False
+def import_from_excel(file_path: str) -> Tuple[bool, str]:
+    """Bulk import is not implemented yet."""
+    return False, ("Importing from Excel is not available yet.\n"
+                   "Add records through the Students, Teachers, Finance and Inventory tabs.")
 
 
 __all__ = [
     'backup_database',
     'restore_database',
+    'run_automatic_backup',
     'export_all_data',
     'import_from_excel',
+    'backup_extension',
 ]

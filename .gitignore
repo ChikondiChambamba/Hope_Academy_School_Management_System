@@ -51,9 +51,14 @@ htmlcov/
 *.temp
 .temp/
 
-# Config files (except template)
-config.py
-!config.py.example
+# Local secrets / credentials (config.py is code and IS tracked; credentials
+# belong in HOPE_DB_* env vars or the per-user user_settings.json)
+.env
+models/me
+
+# Generated reports (the app writes these to USER_DATA_DIR/reports)
+reports/*.pdf
+database/backups/
 
 # Executables
 *.exe
