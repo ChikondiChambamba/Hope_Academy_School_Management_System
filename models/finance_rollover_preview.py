@@ -85,9 +85,11 @@ class FinanceRolloverPreviewMixin:
     ) -> Dict[str, Any]:
         """Build deterministic preview data for a term rollover."""
         excluded_carry_ids = cls._normalize_excluded_carry_student_ids(excluded_student_ids)
+        # A new academic year moves pupils up a class: next-term fees are those of the new class.
+        promote = to_academic_year != from_academic_year
         source_fee_rows = cls._student_fee_rows_for_term(from_academic_year, from_term)
         next_term_rows = cls._student_fee_rows_for_term(
-            to_academic_year, to_term, treat_new_students_as_continuing=True
+            to_academic_year, to_term, treat_new_students_as_continuing=True, promote_classes=promote
         )
         existing_carry_rows = cls._existing_carried_rows_for_term(from_academic_year, from_term)
         warnings: List[str] = []
@@ -96,7 +98,8 @@ class FinanceRolloverPreviewMixin:
             from_term,
             to_academic_year,
             to_term,
-            treat_new_students_as_continuing=True
+            treat_new_students_as_continuing=True,
+            promote_classes=promote,
         )
         if inherited_templates > 0:
             next_term_rows = projected_next_term_rows
@@ -271,6 +274,21 @@ class FinanceRolloverPreviewMixin:
                 student['carry_status'] = 'Reset'
             preview_rows.append(student)
 
+        promotion = cls.get_promotion_plan() if promote else None
+        if promotion:
+            graduating = set(promotion['graduating_student_ids'])
+            for row in preview_rows:
+                row['next_class'] = config.Config.promoted_class(row.get('class'))
+                row['graduating'] = row['student_id'] in graduating
+            leaving_owing = [r for r in preview_rows if r['graduating'] and r['carry_forward_total'] > 0]
+            promotion['graduating_with_balance'] = len(leaving_owing)
+            promotion['graduating_balance_total'] = round(sum(r['carry_forward_total'] for r in leaving_owing), 2)
+            if leaving_owing:
+                warnings.append(
+                    f"{len(leaving_owing)} graduating pupil(s) still owe a total of "
+                    f"{promotion['graduating_balance_total']:,.2f}; the balance stays on their (inactive) record."
+                )
+
         preview_rows.sort(key=lambda r: (r.get('class') or '', r.get('student_name') or ''))
         summary = {
             'total_students': len(preview_rows),
@@ -293,6 +311,7 @@ class FinanceRolloverPreviewMixin:
             'summary': summary,
             'warnings': warnings,
             'projected_fee_type_copies': inherited_templates,
+            'promotion': promotion,                       # None unless the academic year changes
             'excluded_carry_student_ids': sorted(excluded_carry_ids)
         }
 

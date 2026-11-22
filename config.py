@@ -119,6 +119,13 @@ class Config:
     CURRENT_USER_ROLE = None
     CURRENT_TERM = APP_CONFIG.get("default_term", "Term 1")
     TERMS = ["Term 1", "Term 2", "Term 3"]
+
+    # Applied when the academic year rolls over (last term -> first term of the
+    # next year): pupils move up one class; pupils in a graduating class leave
+    # (they are made inactive, their records and payments are kept). Classes not
+    # listed (e.g. Nursery, Reception) stay as they are.
+    CLASS_PROGRESSION = {f"Grade {n}": f"Grade {n + 1}" for n in range(1, 7)}
+    GRADUATING_CLASSES = ("Grade 7",)
     TERM_SCHEDULE = APP_CONFIG.get(
         "term_schedule",
         {
@@ -575,6 +582,17 @@ class Config:
                 out[key] = None if (cutoff and parsed and parsed <= cutoff) else (value or None)
             cleaned[term_name] = out
         return cleaned
+
+    @staticmethod
+    def promoted_class(class_name: str):
+        """Class a pupil moves to at the new academic year; None if they graduate."""
+        key = (class_name or "").strip().lower()
+        if key in {c.lower() for c in Config.GRADUATING_CLASSES}:
+            return None
+        for old, new in Config.CLASS_PROGRESSION.items():
+            if old.lower() == key:
+                return new
+        return class_name
 
     @staticmethod
     def get_users():

@@ -630,6 +630,7 @@ class FinanceTab:
             year_note = (
                 f"\n\nThis closes academic year {from_year}: the current academic year becomes {to_year} "
                 f"and last year's term dates are cleared. Enter the new term dates in Preferences afterwards."
+                f"\n\n{FinancialManager.describe_promotion(preview.get('promotion'))}"
                 if to_year != from_year else ""
             )
             confirm = messagebox.askyesno(
@@ -675,6 +676,9 @@ class FinanceTab:
                 f"Term rollover to {config.Config.CURRENT_TERM} {config.Config.CURRENT_ACADEMIC_YEAR} completed successfully."
                 + (f"\n\nFee types copied from the previous term: {cloned_fee_types}" if cloned_fee_types > 0 else "")
                 + (f"\n\nStudents marked as continuing: {continuing_students}" if continuing_students > 0 else "")
+                + (f"\n\nMoved up a class: {result['promotion_result']['promoted_students']}, "
+                   f"finished school (now inactive): {result['promotion_result']['graduated_students']}"
+                   if result.get('promotion_result') else "")
             )
         except Exception as e:
             messagebox.showerror("Rollover Failed", f"Failed to execute rollover: {e}")

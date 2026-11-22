@@ -2080,7 +2080,8 @@ class PreferencesDialog(BaseDialog):
                     if carry_students > 0 else ""
                 )
                 year_line = (
-                    f"\n\nThis closes academic year {previous_acad} and opens {new_acad}."
+                    f"\n\nThis closes academic year {previous_acad} and opens {new_acad}.\n\n"
+                    f"{FinancialManager.describe_promotion(preview.get('promotion'))}"
                     if year_changed else ""
                 )
                 confirmed = messagebox.askyesno(

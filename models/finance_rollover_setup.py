@@ -223,6 +223,87 @@ class FinanceRolloverSetupMixin:
         return expected_year, expected_term
 
     @staticmethod
+    def _promotion_sql(column: str) -> tuple:
+        """SQL for the class after promotion, and a filter excluding graduating pupils."""
+        def lit(value: str) -> str:
+            return "'" + value.replace("'", "''") + "'"
+        whens = " ".join(f"WHEN {lit(old.lower())} THEN {lit(new)}"
+                         for old, new in config.Config.CLASS_PROGRESSION.items())
+        class_expr = f"(CASE LOWER({column}) {whens} ELSE {column} END)" if whens else column
+        grads = ", ".join(lit(c.lower()) for c in config.Config.GRADUATING_CLASSES)
+        graduating_filter = f"AND LOWER({column}) NOT IN ({grads})" if grads else ""
+        return class_expr, graduating_filter
+
+    @staticmethod
+    def get_promotion_plan() -> Dict[str, Any]:
+        """Who moves where at the next academic-year rollover (active pupils only)."""
+        rows = db.execute_query(
+            "SELECT student_id, class FROM students WHERE is_active = 1", fetch=True) or []
+        moves: Dict[tuple, int] = {}
+        graduating_ids: List[int] = []
+        for r in rows:
+            new = config.Config.promoted_class(r['class'])
+            if new is None:
+                graduating_ids.append(int(r['student_id']))
+            elif new != r['class']:
+                moves[(r['class'], new)] = moves.get((r['class'], new), 0) + 1
+        return {
+            'moves': sorted(([old, new, n] for (old, new), n in moves.items()),
+                            key=lambda m: (config.Config.promoted_class(m[0]) or '', m[0])),
+            'promoted_students': sum(moves.values()),
+            'graduating_student_ids': graduating_ids,
+            'graduating_students': len(graduating_ids),
+        }
+
+    @staticmethod
+    def describe_promotion(promotion) -> str:
+        """Plain-language summary of a promotion plan, for confirmation messages."""
+        if not promotion:
+            return ""
+        lines = ["Pupils moving up a class:"]
+        lines += [f"   {old} -> {new}: {n}" for old, new, n in promotion.get('moves') or []]
+        if promotion.get('graduating_students'):
+            leaving = ", ".join(config.Config.GRADUATING_CLASSES)
+            lines.append(f"   {leaving}: {promotion['graduating_students']} pupil(s) finish school "
+                         f"and are made inactive")
+        if promotion.get('graduating_with_balance'):
+            lines.append(f"   ({promotion['graduating_with_balance']} of them still owe "
+                         f"{promotion['graduating_balance_total']:,.2f})")
+        if len(lines) == 1:
+            lines.append("   none")
+        return "\n".join(lines)
+
+    @classmethod
+    def _promote_students(cls, connection) -> Dict[str, int]:
+        """Move every active pupil up one class; graduating pupils become inactive.
+
+        Runs inside the rollover transaction. Graduates are deactivated first and
+        the promotion is a single UPDATE, so nobody is moved up twice.
+        """
+        def run(sql, params=(), fetch=False):
+            return db.execute_query_in_transaction(connection, sql, params, fetch=fetch)
+
+        plan = cls.get_promotion_plan()
+        grads = [c.lower() for c in config.Config.GRADUATING_CLASSES]
+        if grads:
+            marks = ", ".join(["%s"] * len(grads))
+            run(f"UPDATE students SET is_active = 0 WHERE is_active = 1 AND LOWER(class) IN ({marks})", tuple(grads))
+        progression = config.Config.CLASS_PROGRESSION
+        if progression:
+            class_expr, _ = cls._promotion_sql("class")
+            olds = [o.lower() for o in progression]
+            marks = ", ".join(["%s"] * len(olds))
+            run(f"UPDATE students SET class = {class_expr} WHERE is_active = 1 AND LOWER(class) IN ({marks})",
+                tuple(olds))
+            # new classes must exist for the Add Student form's class list
+            for new in progression.values():
+                found = run("SELECT class_id FROM classes WHERE LOWER(class_name) = LOWER(%s)", (new,), fetch=True)
+                if not found:
+                    run("INSERT INTO classes (class_name, academic_year) VALUES (%s, %s)",
+                        (new, config.Config.CURRENT_ACADEMIC_YEAR))
+        return {'promoted_students': plan['promoted_students'], 'graduated_students': plan['graduating_students']}
+
+    @staticmethod
     def _ensure_rollover_year_columns() -> None:
         """Older databases lack the columns recording the target/source academic year."""
         if db.manages_schema or not db.once('schema.rollover_year_columns'):
@@ -239,9 +320,14 @@ class FinanceRolloverSetupMixin:
         cls,
         academic_year: str,
         term: str,
-        treat_new_students_as_continuing: bool = False
+        treat_new_students_as_continuing: bool = False,
+        promote_classes: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Return one row per student/fee type for a specific term."""
+        """Return one row per student/fee type for a specific term.
+
+        promote_classes: compute rows for the class each pupil will be in after
+        the academic-year promotion (graduating pupils are left out).
+        """
         cls._ensure_term_rollover_tables()
         from database.queries import student_is_new_available
 
@@ -252,12 +338,13 @@ class FinanceRolloverSetupMixin:
             is_new_guard = "AND 1=1"
         else:
             is_new_guard = "AND s.is_new = 0" if student_is_new_available() else "AND 1=0"
+        class_expr, graduating_filter = cls._promotion_sql("s.class") if promote_classes else ("s.class", "")
         query = f"""
             SELECT
                 s.student_id,
                 s.student_code,
                 CONCAT(s.first_name, ' ', s.last_name) AS student_name,
-                s.class AS class_name,
+                {class_expr} AS class_name,
                 ft.fee_type_id,
                 ft.fee_name,
                 ft.is_required,
@@ -270,7 +357,7 @@ class FinanceRolloverSetupMixin:
                 CASE
                     WHEN sfe.exemption_id IS NOT NULL THEN 0
                     WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') {is_new_guard} THEN 0
-                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
+                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER({class_expr}) LIKE '%%nursery%%' OR LOWER({class_expr}) LIKE '%%reception%%') THEN 45000
                     WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
                     ELSE ft.amount
                 END AS expected_amount,
@@ -288,6 +375,7 @@ class FinanceRolloverSetupMixin:
                 GROUP BY student_id, fee_type_id
             ) sf ON sf.student_id = s.student_id AND sf.fee_type_id = ft.fee_type_id
             WHERE s.is_active = 1
+              {graduating_filter}
               AND (
                     NOT EXISTS (
                         SELECT 1 FROM fee_type_classes ftc0
@@ -298,7 +386,7 @@ class FinanceRolloverSetupMixin:
                         FROM fee_type_classes ftc
                         JOIN classes c ON c.class_id = ftc.class_id
                         WHERE ftc.fee_type_id = ft.fee_type_id
-                          AND LOWER(c.class_name) = LOWER(s.class)
+                          AND LOWER(c.class_name) = LOWER({class_expr})
                           AND (ftc.academic_year IS NULL OR ftc.academic_year = '' OR ftc.academic_year = %s)
                     )
               )
@@ -380,9 +468,14 @@ class FinanceRolloverSetupMixin:
         from_term: str,
         to_academic_year: str,
         to_term: str,
-        treat_new_students_as_continuing: bool = False
+        treat_new_students_as_continuing: bool = False,
+        promote_classes: bool = False,
     ) -> tuple[List[Dict[str, Any]], int]:
-        """Project next-term student fee rows, inheriting missing fee types from the previous term."""
+        """Project next-term student fee rows, inheriting missing fee types from the previous term.
+
+        promote_classes: use the class each pupil moves to at the new academic
+        year; graduating pupils get no new-term fees.
+        """
         from database.queries import student_is_new_available
 
         target_templates = cls._get_term_fee_templates(to_academic_year, to_term)
@@ -424,7 +517,12 @@ class FinanceRolloverSetupMixin:
 
         projected_rows: List[Dict[str, Any]] = []
         for student in student_rows:
-            student_class = (student.get('class') or '').strip().lower()
+            next_class = student.get('class') or ''
+            if promote_classes:
+                next_class = config.Config.promoted_class(next_class)
+                if next_class is None:      # graduating: no fees next year
+                    continue
+            student_class = next_class.strip().lower()
             is_new_student = False if treat_new_students_as_continuing else (bool(student.get('is_new')) if student_is_new_available() else False)
             for template in effective_templates:
                 class_scope = template.get('class_names') or []
@@ -445,7 +543,7 @@ class FinanceRolloverSetupMixin:
                     'student_id': student.get('student_id'),
                     'student_code': student.get('student_code') or '',
                     'student_name': student.get('student_name') or '',
-                    'class_name': student.get('class') or '',
+                    'class_name': next_class,
                     'fee_type_id': template.get('fee_type_id'),
                     'fee_name': fee_name,
                     'is_required': 1 if template.get('is_required') else 0,

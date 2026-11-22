@@ -184,6 +184,9 @@ class FinanceRolloverExecuteMixin:
                     )
                 )
 
+            # New academic year: every pupil moves up a class, the top class leaves.
+            promotion_result = cls._promote_students(connection) if year_changes else None
+
             run(
                 """
                 INSERT INTO term_changes (
@@ -211,6 +214,7 @@ class FinanceRolloverExecuteMixin:
         preview['run_id'] = run_id
         preview['executed'] = True
         preview['year_changed'] = year_changes
+        preview['promotion_result'] = promotion_result
         preview['cloned_fee_types'] = cloned_fee_types
         preview['continuing_students_updated'] = continuing_students_updated
         return preview
