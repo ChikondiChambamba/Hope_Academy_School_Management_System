@@ -128,7 +128,7 @@ Hope_Academy_School_Management_System/
 │
 ├── setup_database.py              # Create database from database/schema.sql
 ├── apply_db_changes.py            # Idempotent migrations for existing databases
-├── HopeSchoolManagement.spec      # PyInstaller spec (build with build_exe.bat)
+├── Hope_Academy_School_Management_System.spec      # PyInstaller spec (build with build_exe.bat)
 ├── school_managemt_setup.iss      # Inno Setup installer script
 │
 ├── tests/                         # DB-free unit tests (python -m unittest discover -s tests -t .)

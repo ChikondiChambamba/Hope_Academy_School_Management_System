@@ -1,17 +1,19 @@
 <#
 .SYNOPSIS
-    Build dist\HopeSchoolManagement.exe from HopeSchoolManagement.spec and,
+    Build dist\Hope_Academy_School_Management_System.exe from Hope_Academy_School_Management_System.spec and,
     optionally, the Windows installer from school_managemt_setup.iss.
 
 .EXAMPLE
     .\build_exe.ps1               # executable only
-    .\build_exe.ps1 -Installer    # executable + installer\HopeSchoolManagement_Setup.exe
+    .\build_exe.ps1 -Installer    # executable + installer\Hope_Academy_School_Management_System_Setup.exe
 #>
 param(
     [switch]$Installer
 )
 
-$ErrorActionPreference = 'Stop'
+# Not 'Stop': PyInstaller logs progress to stderr, which Windows PowerShell 5.1
+# turns into a terminating error. Failures are detected via $LASTEXITCODE below.
+$ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $here
 
@@ -19,14 +21,14 @@ Set-Location $here
 $python = Join-Path $here '.venv\Scripts\python.exe'
 if (-not (Test-Path $python)) { $python = 'python' }
 
-$spec = 'HopeSchoolManagement.spec'
+$spec = 'Hope_Academy_School_Management_System.spec'
 Write-Host "Building $spec with $python"
 & $python -m PyInstaller --clean --noconfirm $spec
 if ($LASTEXITCODE -ne 0) {
     Write-Host "PyInstaller failed with exit code $LASTEXITCODE" -ForegroundColor Red
     exit $LASTEXITCODE
 }
-Write-Host 'Built dist\HopeSchoolManagement.exe' -ForegroundColor Green
+Write-Host 'Built dist\Hope_Academy_School_Management_System.exe' -ForegroundColor Green
 
 if ($Installer) {
     $iscc = @(
@@ -44,5 +46,5 @@ if ($Installer) {
         Write-Host "Installer compilation failed with exit code $LASTEXITCODE" -ForegroundColor Red
         exit $LASTEXITCODE
     }
-    Write-Host 'Built installer\HopeSchoolManagement_Setup.exe' -ForegroundColor Green
+    Write-Host 'Built installer\Hope_Academy_School_Management_System_Setup.exe' -ForegroundColor Green
 }

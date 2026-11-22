@@ -7,7 +7,7 @@ This manual explains how to install and use the Hope Academy School Management S
 
 Installing the program
 ----------------------
-1. Run HopeSchoolManagement_Setup.exe and follow the steps. Nothing else needs to be installed.
+1. Run Hope_Academy_School_Management_System_Setup.exe and follow the steps. Nothing else needs to be installed.
 2. Open the program from the desktop or the Start menu.
 
 The first time it opens, a Welcome window asks two questions:

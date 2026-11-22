@@ -8,7 +8,7 @@
 #define MyAppName "Hope Academy School Management System"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Hope Academy"
-#define MyAppExeName "HopeSchoolManagement.exe"
+#define MyAppExeName "Hope_Academy_School_Management_System.exe"
 
 [Setup]
 ; Unique per application; never change it, or upgrades will install side by side.
@@ -22,7 +22,7 @@ DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=installer
-OutputBaseFilename=HopeSchoolManagement_Setup
+OutputBaseFilename=Hope_Academy_School_Management_System_Setup
 SetupIconFile=assets\app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64

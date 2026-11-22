@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # The single PyInstaller spec for this project. Build with build_exe.bat
-# (or: python -m PyInstaller --clean HopeSchoolManagement.spec).
-# Output: dist/HopeSchoolManagement.exe, which school_managemt_setup.iss packages.
+# (or: python -m PyInstaller --clean Hope_Academy_School_Management_System.spec).
+# Output: dist/Hope_Academy_School_Management_System.exe, which school_managemt_setup.iss packages.
 
 a = Analysis(
     ['main.py'],
@@ -30,7 +30,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='HopeSchoolManagement',
+    name='Hope_Academy_School_Management_System',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
