@@ -1269,10 +1269,11 @@ class FinanceTab:
         left = ttk.LabelFrame(container, text='Fee Types', padding=10)
         left.pack(side='left', fill='both', expand=True, padx=5, pady=5)
 
-        self.fee_types_tree = ttk.Treeview(left, columns=('ID', 'Name', 'Amount', 'Term', 'Required', 'Classes'), show='headings', height=12)
-        for col in ('ID', 'Name', 'Amount', 'Term', 'Required', 'Classes'):
+        fee_cols = ('ID', 'Name', 'Amount', 'Term', 'Required', 'New pupils only', 'Classes')
+        self.fee_types_tree = ttk.Treeview(left, columns=fee_cols, show='headings', height=12)
+        for col in fee_cols:
             self.fee_types_tree.heading(col, text=col)
-            width = 220 if col == 'Classes' else 100
+            width = {'Classes': 220, 'ID': 50, 'New pupils only': 110}.get(col, 100)
             self.fee_types_tree.column(col, width=width)
         self.fee_types_tree.pack(fill='both', expand=True)
 
@@ -1347,6 +1348,7 @@ class FinanceTab:
                         format_currency(ft.amount),
                         ft.term,
                         'Yes' if ft.is_required else 'No',
+                        'Yes' if ft.new_students_only else 'No',
                         scope_text
                     )
                 )
@@ -1372,8 +1374,10 @@ class FinanceTab:
         data = dialog.result_data
         try:
             normalized_term = config.Config.normalize_term_name(data['term'])
-            query = "INSERT INTO fee_types (fee_name, description, amount, term, academic_year, is_required) VALUES (%s, %s, %s, %s, %s, %s)"
-            fid = db.execute_query(query, (data['fee_name'], '', data['amount'], normalized_term, config.Config.CURRENT_ACADEMIC_YEAR, 1 if data['is_required'] else 0))
+            query = ("INSERT INTO fee_types (fee_name, description, amount, term, academic_year, is_required, new_students_only) "
+                     "VALUES (%s, %s, %s, %s, %s, %s, %s)")
+            fid = db.execute_query(query, (data['fee_name'], '', data['amount'], normalized_term, config.Config.CURRENT_ACADEMIC_YEAR,
+                                           1 if data['is_required'] else 0, 1 if data.get('new_students_only') else 0))
             # Persist mappings if specific classes chosen
             if not data.get('apply_to_all'):
                 # handle numeric ids
@@ -1413,13 +1417,15 @@ class FinanceTab:
         item = self.fee_types_tree.item(selected[0], 'values')
         fid = item[0]
         from UI.dialogs import FeeTypeDialog
-        # Prepare existing data
-        try:
-            # amount column shown already formatted; attempt to parse
-            amount_str = str(item[2]).replace(config.Config.CURRENCY_SYMBOL, '')
-            existing = {'fee_name': item[1], 'amount': float(amount_str) if amount_str else 0.0, 'term': item[3], 'is_required': (item[4] == 'Yes')}
-        except Exception:
-            existing = {'fee_name': item[1], 'amount': 0.0, 'term': item[3], 'is_required': (item[4] == 'Yes')}
+        # Load the stored fee type. (Parsing the list's "MK 85,000.00" text failed on the
+        # thousands separator and opened the form with amount 0.)
+        from models.finance import FeeType
+        fee = FeeType.get_by_id(int(fid))
+        if fee is None:
+            messagebox.showerror('Edit Fee Type', 'This fee type no longer exists.')
+            return
+        existing = {'fee_name': fee.fee_name, 'amount': float(fee.amount or 0), 'term': fee.term,
+                    'is_required': bool(fee.is_required), 'new_students_only': bool(fee.new_students_only)}
 
         # fetch existing class mappings
         try:
@@ -1436,8 +1442,10 @@ class FinanceTab:
         data = dialog.result_data
         try:
             normalized_term = config.Config.normalize_term_name(data['term'])
-            query = "UPDATE fee_types SET fee_name=%s, amount=%s, term=%s, is_required=%s WHERE fee_type_id=%s"
-            db.execute_query(query, (data['fee_name'], data['amount'], normalized_term, 1 if data.get('is_required') else 0, fid))
+            query = ("UPDATE fee_types SET fee_name=%s, amount=%s, term=%s, is_required=%s, new_students_only=%s "
+                     "WHERE fee_type_id=%s")
+            db.execute_query(query, (data['fee_name'], data['amount'], normalized_term, 1 if data.get('is_required') else 0,
+                                     1 if data.get('new_students_only') else 0, fid))
             # Update mappings: remove old then insert new if needed
             try:
                 db.execute_query('DELETE FROM fee_type_classes WHERE fee_type_id=%s', (fid,))
@@ -1736,7 +1744,7 @@ class FinanceTab:
             print(f"Error loading fee types: {e}")
 
     def on_fee_type_selected(self, event=None):
-        """Auto-fill and enforce tuition amounts based on student class when tuition fee selected."""
+        """Prefill the amount when a fee type is chosen (the carried balance for the carried-forward fee)."""
         try:
             sel = self.fee_type_var.get()
             if not sel:
@@ -1758,44 +1766,12 @@ class FinanceTab:
                     self.amount_entry.config(state='normal')
                 return
 
-            # Default behavior: set amount to stored fee amount
+            # Prefill the fee type's own amount; it stays editable for part-payments.
+            # (Different classes paying different tuition are separate fee types.)
             expected = float(db_amount)
-
-            # If fee is tuition, enforce based on class
-            if 'tuition' in fee_name.lower():
-                student_sel = self.student_var.get() or ''
-                # student_sel format: "<id>: First Last (Class)"
-                class_part = ''
-                m = re.search(r"\(([^)]+)\)", student_sel)
-                if m:
-                    class_part = m.group(1).strip()
-                else:
-                    # try take trailing token
-                    parts = student_sel.split('(')
-                    if len(parts) > 1:
-                        class_part = parts[-1].strip(') ')
-
-                # Determine expected tuition
-                if class_part and 'nursery' in class_part.lower():
-                    expected = 45000.0
-                else:
-                    # try to find numeric grade
-                    num_match = re.search(r"(\d+)", class_part)
-                    if num_match:
-                        try:
-                            grade = int(num_match.group(1))
-                            if 1 <= grade <= 7:
-                                expected = 85000.0
-                        except ValueError:
-                            pass
-
-            # Set amount and lock if tuition
             self.amount_var.set(str(int(expected) if float(expected).is_integer() else f"{expected:.2f}"))
             if hasattr(self, 'amount_entry'):
-                if 'tuition' in (fee_name or '').lower():
-                    self.amount_entry.config(state='readonly')
-                else:
-                    self.amount_entry.config(state='normal')
+                self.amount_entry.config(state='normal')
 
         except Exception as e:
             print(f"Error handling fee type selection: {e}")

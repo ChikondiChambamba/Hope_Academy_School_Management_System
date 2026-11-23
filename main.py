@@ -67,15 +67,19 @@ class Application:
                 logging.getLogger(__name__).exception("Automatic backup failed")
             return
 
-        if not check_database_connection():
-            cfg = config.Config.DB_CONFIG
-            if not messagebox.askyesno(
-                "Cannot reach the MySQL server",
-                f"The program could not connect to the MySQL server at {cfg.get('host')}.\n\n"
-                "Check that MySQL is running, then start the program again.\n\n"
-                "Open the program anyway? (Most screens will be empty.)"
-            ):
-                sys.exit(0)
+        if check_database_connection():
+            # Bring older MySQL databases up to date with columns the app relies on.
+            from models.finance import FeeType
+            FeeType.ensure_fee_rule_columns()
+            return
+        cfg = config.Config.DB_CONFIG
+        if not messagebox.askyesno(
+            "Cannot reach the MySQL server",
+            f"The program could not connect to the MySQL server at {cfg.get('host')}.\n\n"
+            "Check that MySQL is running, then start the program again.\n\n"
+            "Open the program anyway? (Most screens will be empty.)"
+        ):
+            sys.exit(0)
 
     def apply_theme(self):
         """Apply the configured ttk theme and optional dark mode."""

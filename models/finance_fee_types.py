@@ -17,9 +17,29 @@ class FeeType:
     term: str = ""
     academic_year: str = ""
     is_required: bool = True
+    # Charged only to pupils marked as new (e.g. registration, uniform).
+    new_students_only: bool = False
     created_at: Optional[datetime] = None
 
     CARRIED_FORWARD_FEE_NAME = "Carried Forward Fee Balance"
+
+    @staticmethod
+    def ensure_fee_rule_columns() -> None:
+        """Add fee_types.new_students_only to databases created before it existed.
+
+        Those databases recognised new-pupil fees by name, so the flag is set
+        once for fees named like registration/uniform; from then on it is an
+        ordinary setting of the fee type.
+        """
+        if db.manages_schema or not db.once('schema.fee_rule_columns'):
+            return
+        if db.column_exists('fee_types', 'new_students_only'):
+            return
+        db.execute_query("ALTER TABLE fee_types ADD COLUMN new_students_only BOOLEAN DEFAULT FALSE AFTER is_required")
+        db.execute_query(
+            "UPDATE fee_types SET new_students_only = 1 "
+            "WHERE LOWER(fee_name) LIKE '%registration%' OR LOWER(fee_name) LIKE '%uniform%'"
+        )
 
     @staticmethod
     def is_carried_forward_fee_name(fee_name: str) -> bool:
@@ -31,6 +51,7 @@ class FeeType:
 
         A one-off cleanup of old data: it runs once per session, not before every query.
         """
+        FeeType.ensure_fee_rule_columns()
         if not db.once('fee_types.term_labels'):
             return
         try:
@@ -110,7 +131,7 @@ class FeeType:
                 query = """
                     UPDATE fee_types SET 
                     fee_name = %s, description = %s, amount = %s,
-                    term = %s, academic_year = %s, is_required = %s
+                    term = %s, academic_year = %s, is_required = %s, new_students_only = %s
                     WHERE fee_type_id = %s
                 """
                 params = (
@@ -120,6 +141,7 @@ class FeeType:
                     fee_data['term'],
                     fee_data['academic_year'],
                     fee_data['is_required'],
+                    1 if fee_data['new_students_only'] else 0,
                     self.fee_type_id
                 )
                 
@@ -129,8 +151,8 @@ class FeeType:
             else:  # Insert
                 query = """
                     INSERT INTO fee_types 
-                    (fee_name, description, amount, term, academic_year, is_required)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    (fee_name, description, amount, term, academic_year, is_required, new_students_only)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """
                 params = (
                     fee_data['fee_name'],
@@ -138,7 +160,8 @@ class FeeType:
                     fee_data['amount'],
                     fee_data['term'],
                     fee_data['academic_year'],
-                    fee_data['is_required']
+                    fee_data['is_required'],
+                    1 if fee_data['new_students_only'] else 0
                 )
                 
                 fee_type_id = db.execute_query(query, params)

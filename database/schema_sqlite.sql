@@ -60,6 +60,7 @@ CREATE TABLE fee_types (
     term TEXT COLLATE NOCASE,
     academic_year TEXT COLLATE NOCASE NOT NULL,
     is_required BOOLEAN DEFAULT 1,
+    new_students_only BOOLEAN DEFAULT 0,          -- charged only to pupils marked as new
     created_at TIMESTAMP DEFAULT (datetime('now', 'localtime'))
 );
 CREATE INDEX idx_fee_types_year_term ON fee_types (academic_year, term);

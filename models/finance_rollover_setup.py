@@ -329,6 +329,7 @@ class FinanceRolloverSetupMixin:
         the academic-year promotion (graduating pupils are left out).
         """
         cls._ensure_term_rollover_tables()
+        FeeType.ensure_fee_rule_columns()
         from database.queries import student_is_new_available
 
         term = config.Config.normalize_term_name(term)
@@ -356,9 +357,7 @@ class FinanceRolloverSetupMixin:
                 END AS is_class_specific,
                 CASE
                     WHEN sfe.exemption_id IS NOT NULL THEN 0
-                    WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') {is_new_guard} THEN 0
-                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER({class_expr}) LIKE '%%nursery%%' OR LOWER({class_expr}) LIKE '%%reception%%') THEN 45000
-                    WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                    WHEN ft.new_students_only = 1 {is_new_guard} THEN 0
                     ELSE ft.amount
                 END AS expected_amount,
                 COALESCE(sf.amount_paid, 0) AS paid_amount
@@ -397,6 +396,7 @@ class FinanceRolloverSetupMixin:
     @staticmethod
     def _get_term_fee_templates(academic_year: str, term: str) -> List[Dict[str, Any]]:
         """Return fee type definitions and class scopes for a term."""
+        FeeType.ensure_fee_rule_columns()
         term = config.Config.normalize_term_name(term)
         aliases = config.Config.get_term_aliases(term) or [term]
         placeholders = ", ".join(["%s"] * len(aliases))
@@ -410,6 +410,7 @@ class FinanceRolloverSetupMixin:
                 ft.term,
                 ft.academic_year,
                 ft.is_required,
+                ft.new_students_only,
                 {db.group_concat_distinct("CAST(ftc.class_id AS CHAR)", "','")} AS class_ids,
                 {db.group_concat_distinct("LOWER(c.class_name)", "'||'")} AS class_names
             FROM fee_types ft
@@ -420,7 +421,8 @@ class FinanceRolloverSetupMixin:
             WHERE ft.academic_year = %s
               AND ft.term IN ({placeholders})
             GROUP BY
-                ft.fee_type_id, ft.fee_name, ft.description, ft.amount, ft.term, ft.academic_year, ft.is_required
+                ft.fee_type_id, ft.fee_name, ft.description, ft.amount, ft.term, ft.academic_year, ft.is_required,
+                ft.new_students_only
             ORDER BY ft.fee_name, ft.fee_type_id
             """,
             tuple([academic_year, academic_year] + aliases),
@@ -446,6 +448,7 @@ class FinanceRolloverSetupMixin:
                 'term': row.get('term') or '',
                 'academic_year': row.get('academic_year') or academic_year,
                 'is_required': bool(row.get('is_required')),
+                'new_students_only': bool(row.get('new_students_only')),
                 'class_ids': class_ids,
                 'class_names': class_names
             })
@@ -531,13 +534,8 @@ class FinanceRolloverSetupMixin:
 
                 fee_name = template.get('fee_name') or ''
                 expected_amount = float(template.get('amount') or 0)
-                lower_fee_name = fee_name.lower()
-                if ('registration' in lower_fee_name or 'uniform' in lower_fee_name) and not is_new_student:
+                if template.get('new_students_only') and not is_new_student:
                     expected_amount = 0.0
-                elif 'tuition' in lower_fee_name and ('nursery' in student_class or 'reception' in student_class):
-                    expected_amount = 45000.0
-                elif 'tuition' in lower_fee_name:
-                    expected_amount = 85000.0
 
                 projected_rows.append({
                     'student_id': student.get('student_id'),
@@ -579,8 +577,9 @@ class FinanceRolloverSetupMixin:
             new_fee_type_id = db.execute_query_in_transaction(
                 connection,
                 """
-                INSERT INTO fee_types (fee_name, description, amount, term, academic_year, is_required)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO fee_types (fee_name, description, amount, term, academic_year, is_required,
+                                       new_students_only)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     template.get('fee_name') or '',
@@ -588,7 +587,8 @@ class FinanceRolloverSetupMixin:
                     float(template.get('amount') or 0),
                     to_term,
                     to_academic_year,
-                    1 if template.get('is_required') else 0
+                    1 if template.get('is_required') else 0,
+                    1 if template.get('new_students_only') else 0
                 )
             )
 

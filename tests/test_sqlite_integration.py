@@ -80,7 +80,8 @@ class SchemaTestCase(SQLiteTestCase):
 
     def test_prepare_is_idempotent_and_versioned(self):
         self.db.prepare()
-        self.assertEqual(self.db.execute_query("PRAGMA user_version", fetch=True)[0]["user_version"], 1)
+        from database.sqlite_backend import SCHEMA_VERSION
+        self.assertEqual(self.db.execute_query("PRAGMA user_version", fetch=True)[0]["user_version"], SCHEMA_VERSION)
         self.assertTrue(self.db.integrity_ok())
 
     def test_foreign_keys_are_enforced(self):

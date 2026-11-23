@@ -195,9 +195,7 @@ class FinanceBalanceMixin:
                        COALESCE(SUM(CASE
                            WHEN sfe.exemption_id IS NOT NULL THEN 0
                            WHEN LOWER(TRIM(ft.fee_name)) = LOWER(%s) THEN 0
-                           WHEN (LOWER(ft.fee_name) LIKE '%%registration%%' OR LOWER(ft.fee_name) LIKE '%%uniform%%') {is_new_guard} THEN 0
-                           WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' AND (LOWER(s.class) LIKE '%%nursery%%' OR LOWER(s.class) LIKE '%%reception%%') THEN 45000
-                           WHEN LOWER(ft.fee_name) LIKE '%%tuition%%' THEN 85000
+                           WHEN ft.new_students_only = 1 {is_new_guard} THEN 0
                            ELSE ft.amount END), 0) AS total_fees,
                        COALESCE(SUM(sf.amount_paid), 0) AS amount_paid,
                        COALESCE(cr.carried_balance, 0) AS carried_balance
@@ -341,7 +339,7 @@ class FinanceBalanceMixin:
             placeholders = ", ".join(["%s"] * len(aliases))
             rows = db.execute_query(
                 f"""
-                SELECT ft.fee_type_id, ft.fee_name, ft.amount,
+                SELECT ft.fee_type_id, ft.fee_name, ft.amount, ft.new_students_only,
                        CASE WHEN sfe.exemption_id IS NOT NULL THEN 1 ELSE 0 END AS is_exempt,
                        COALESCE(sf.amount_paid, 0) AS paid_amount
                 FROM fee_types ft
@@ -379,15 +377,10 @@ class FinanceBalanceMixin:
                 if carry_fee_type_id and fid == int(carry_fee_type_id):
                     continue
                 current_fee_ids.add(fid)
-                name_l = fee_name.lower()
                 if row.get('is_exempt'):
                     expected = 0.0
-                elif ('registration' in name_l or 'uniform' in name_l) and not is_new:
+                elif row.get('new_students_only') and not is_new:
                     expected = 0.0
-                elif 'tuition' in name_l and ('nursery' in student_class.lower() or 'reception' in student_class.lower()):
-                    expected = 45000.0
-                elif 'tuition' in name_l:
-                    expected = 85000.0
                 else:
                     expected = float(row.get('amount') or 0)
                 paid = float(row.get('paid_amount') or 0)

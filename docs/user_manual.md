@@ -102,9 +102,12 @@ Receipt generation and uniqueness
 - If you see a MySQL 1062 duplicate error, check that `receipt_sequence` exists and the application has insert/update permission.
 
 Business rules enforced by the app
-- Registration & Uniform fees only apply to students with `is_new = True`.
-- Tuition mapping by class: the UI/code applies tuition amounts based on the student's class (e.g., Nursery/Reception vs Grades 1–7). These are applied at runtime; fee_type rows keep historical values.
-- When a tuition payment is recorded for a student, other tuition fee types for that student are recorded as exemptions in `student_fee_exemptions` to prevent duplicate tuition charges.
+- Every fee is charged at the amount set on its fee type. To charge classes different amounts (for example
+  tuition for Nursery/Reception and for Grades 1-7), create one fee type per amount and tick the classes it
+  applies to. Changing a fee type's amount changes what pupils owe.
+- Fee types with "Only charged to new pupils" ticked (e.g. registration, uniform) apply only to pupils marked
+  as New Student.
+- Exemptions are only created deliberately; recording a payment never exempts a pupil from other fees.
 
 Student balances
 - Balances are computed per-student using only the fee types that apply to them (honoring `student_fee_exemptions` and `is_new`). Reports and the Student tab now use conditional aggregation queries so totals reflect applicable fees only.
@@ -171,7 +174,7 @@ If you want to run quick manual checks:
 1. Restart the app.
 2. Add a new student and set `is_new = True`.
 3. Record a registration payment; confirm registration/uniform apply only to `is_new` students.
-4. Record tuition for a student and confirm other tuition fee types are recorded as exemptions automatically.
+4. Change a fee type's amount and confirm the affected pupils' balances change accordingly.
 5. Generate Student Fees Report and confirm the expected vs paid vs balance values.
 
 Support & Feedback

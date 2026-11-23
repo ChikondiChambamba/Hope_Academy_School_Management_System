@@ -64,6 +64,7 @@ CREATE TABLE fee_types (
     term VARCHAR(20),
     academic_year VARCHAR(20) NOT NULL,
     is_required BOOLEAN DEFAULT TRUE,
+    new_students_only BOOLEAN DEFAULT FALSE,     -- charged only to pupils marked as new
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
     INDEX idx_academic_year (academic_year),

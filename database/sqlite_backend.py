@@ -25,8 +25,15 @@ def _schema_file() -> Path:
     return bundled if bundled.exists() else Path(__file__).resolve().parent / "schema_sqlite.sql"
 
 # Bump when schema_sqlite.sql changes and add the upgrade step to _MIGRATIONS.
-SCHEMA_VERSION = 1
-_MIGRATIONS: Dict[int, str] = {}  # {version: "SQL script upgrading version-1 -> version"}
+SCHEMA_VERSION = 2
+_MIGRATIONS: Dict[int, str] = {  # {version: SQL script upgrading version-1 -> version}
+    # v2: "new pupils only" is a fee-type setting instead of a rule on the fee name.
+    2: """
+        ALTER TABLE fee_types ADD COLUMN new_students_only BOOLEAN DEFAULT 0;
+        UPDATE fee_types SET new_students_only = 1
+         WHERE LOWER(fee_name) LIKE '%registration%' OR LOWER(fee_name) LIKE '%uniform%';
+    """,
+}
 
 
 # --- value conversion --------------------------------------------------------

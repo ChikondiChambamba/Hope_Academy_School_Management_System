@@ -61,6 +61,12 @@ def create_table(name: str, ddl: str):
     return run
 
 
+def ensure_fee_rule_columns():
+    from models.finance import FeeType
+    FeeType.ensure_fee_rule_columns()
+    return "ensured fee_types.new_students_only (registration/uniform fees flagged once)"
+
+
 def ensure_expense_terms():
     from models.finance import Expense
     Expense.ensure_term_columns()
@@ -81,6 +87,7 @@ MIGRATIONS = [
     add_index("student_fees", "idx_student_fees_fee_type", "fee_type_id"),
     add_index("fee_types", "idx_fee_types_year_term", "academic_year, term"),
     ensure_expense_terms,
+    ensure_fee_rule_columns,
     normalize_fee_type_terms,
     widen_payment_methods,
     # Rollovers from the last term open the next academic year; record both years.

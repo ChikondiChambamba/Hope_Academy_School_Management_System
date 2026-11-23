@@ -647,7 +647,7 @@ class TeacherDialog(BaseDialog):
 class FeeTypeDialog(BaseDialog):
     """Dialog to add/edit a fee type"""
     def __init__(self, parent, title, fee_type=None):
-        super().__init__(parent, title, 420, 320)
+        super().__init__(parent, title, 540, 360)
         self.fee_type = fee_type or {}
         self.result_data = None
         self.setup_ui()
@@ -671,7 +671,12 @@ class FeeTypeDialog(BaseDialog):
 
         # Required
         self.req_var = tk.IntVar(value=1 if self.fee_type.get('is_required', True) else 0)
-        ttk.Checkbutton(frame, text='Required', variable=self.req_var).grid(row=3, column=1, sticky='w', pady=8)
+        self.new_only_var = tk.IntVar(value=1 if self.fee_type.get('new_students_only') else 0)
+        flags = ttk.Frame(frame)
+        flags.grid(row=3, column=1, sticky='w', pady=8)
+        ttk.Checkbutton(flags, text='Required', variable=self.req_var).pack(anchor='w')
+        ttk.Checkbutton(flags, text='Only charged to new pupils (e.g. registration, uniform)',
+                        variable=self.new_only_var).pack(anchor='w')
 
         # Apply to specific classes
         ttk.Label(frame, text="Apply To Classes:").grid(row=4, column=0, sticky='ne', padx=5, pady=8)
@@ -762,7 +767,8 @@ class FeeTypeDialog(BaseDialog):
             'fee_name': name,
             'amount': amount,
             'term': term,
-            'is_required': is_required
+            'is_required': is_required,
+            'new_students_only': bool(self.new_only_var.get()),
         }
         # classes selection
         apply_all = bool(self.apply_all_var.get())
@@ -875,11 +881,10 @@ class FeePaymentDialog(BaseDialog):
             config.Config.CURRENT_TERM
         )
 
-        # If student is continuing, registration and uniform should not be selectable
+        # Continuing pupils are not offered fees meant only for new pupils
         filtered_fee_types = []
         for ft in fee_types:
-            name_l = ft.fee_name.lower()
-            if not getattr(self.student, 'is_new', True) and ('registration' in name_l or 'uniform' in name_l):
+            if ft.new_students_only and not getattr(self.student, 'is_new', True):
                 continue
             filtered_fee_types.append(ft)
 
@@ -1018,7 +1023,6 @@ class FeePaymentDialog(BaseDialog):
             ft = self._fee_type_lookup.get(sel)
             if not ft:
                 return
-            fname = ft.fee_name.lower()
             if FeeType.is_carried_forward_fee_name(ft.fee_name):
                 from models.finance import FinancialManager
 
@@ -1028,14 +1032,8 @@ class FeePaymentDialog(BaseDialog):
                     term=config.Config.CURRENT_TERM
                 )
                 amt = float(balance.get('remaining_carried_balance') or balance.get('carried_balance') or 0)
-            # Tuition override by class
-            elif 'tuition' in fname:
-                cls = (getattr(self.student, 'class_name', '') or '').lower()
-                if any(k in cls for k in ('nursery', 'reception')):
-                    amt = 45000.0
-                else:
-                    amt = 85000.0
             else:
+                # The fee type's own amount (class-specific fees are separate fee types).
                 amt = float(ft.amount)
             self.amount_var.set(str(int(amt) if float(amt).is_integer() else f"{amt:.2f}"))
         except Exception:
