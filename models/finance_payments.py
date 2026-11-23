@@ -91,29 +91,10 @@ class FeePayment:
                                  f'Payment of {self.amount_paid} recorded for student {self.student_id}',
                                  {'receipt_number': self.receipt_number, 'method': self.payment_method})
 
-                # After successful payment, apply business rules:
-                # - If this payment is for a tuition fee, exempt other tuition fee types for this student.
-                try:
-                    ft = FeeType.get_by_id(self.fee_type_id)
-                    if ft and 'tuition' in ft.fee_name.lower():
-                        # find other tuition fee types for this academic year
-                        other_tuitions = db.execute_query(
-                            "SELECT fee_type_id FROM fee_types WHERE academic_year = %s AND LOWER(fee_name) LIKE %s AND fee_type_id != %s",
-                            (ft.academic_year, '%tuition%', ft.fee_type_id),
-                            fetch=True
-                        )
-                        if other_tuitions:
-                            for row in other_tuitions:
-                                try:
-                                    db.execute_query(
-                                        "INSERT IGNORE INTO student_fee_exemptions (student_id, fee_type_id, reason) VALUES (%s, %s, %s)",
-                                        (self.student_id, row['fee_type_id'], f"Exempted because tuition {ft.fee_type_id} paid")
-                                    )
-                                except Exception:
-                                    pass
-
-                except Exception:
-                    pass
+                # No automatic exemptions here. An earlier rule exempted the pupil from every
+                # other fee named "tuition" in the academic year whenever one was paid, which
+                # also cancelled other terms' tuition. Class-specific fees already prevent
+                # double charging; exemptions are only ever added deliberately.
 
                 return True, f"Payment recorded successfully. Receipt: {self.receipt_number}"
 
